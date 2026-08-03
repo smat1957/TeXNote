@@ -3,6 +3,7 @@ import PDFKit
 import SwiftUI
 
 struct PDFPageCarousel: View {
+    private let data: Data
     private let pages: [RenderedPDFPage]
     private let canSelectNextCard: Bool
     private let canSelectPreviousCard: Bool
@@ -17,8 +18,8 @@ struct PDFPageCarousel: View {
     @GestureState private var gestureMagnification: CGFloat = 1
     @GestureState private var gestureTranslation = CGSize.zero
 
-    private let minimumZoom: CGFloat = 0.3
-    private let maximumZoom: CGFloat = 3
+    private let minimumZoom: CGFloat = 1
+    private let maximumZoom: CGFloat = 4
 
     private var displayedZoom: CGFloat {
         clampedZoom(zoom * gestureMagnification)
@@ -32,6 +33,7 @@ struct PDFPageCarousel: View {
         nextCardAction: @escaping () -> Void,
         previousCardAction: @escaping () -> Void
     ) {
+        self.data = data
         pages = PDFPageRenderer.render(data: data)
         _position = position
         self.canSelectNextCard = canSelectNextCard
@@ -95,8 +97,11 @@ struct PDFPageCarousel: View {
             LazyHStack(spacing: 0) {
                 ForEach(pages) { page in
                     let pageSize = fittedPageSize(for: page, in: size)
-                    Image(decorative: page.image, scale: 1)
-                        .resizable()
+                    AdaptivePDFPageImage(
+                        data: data,
+                        page: page,
+                        zoom: displayedZoom
+                    )
                         .frame(
                             width: pageSize.width,
                             height: pageSize.height
@@ -120,17 +125,29 @@ struct PDFPageCarousel: View {
             set: { currentPage = $0 ?? 0 }
         ))
         .contentShape(Rectangle())
+#if !os(macOS)
         .simultaneousGesture(zoomGesture)
+#endif
         .simultaneousGesture(
             panGesture(in: size),
             including: zoom > 1 ? .all : .none
         )
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
-                zoom = 1
-                panOffset = .zero
+                resetZoom()
             }
         )
+#if os(macOS)
+        .macOSPDFZoomControls(
+            magnify: applyMagnification,
+            zoomPercentage: Int((zoom * 100).rounded()),
+            canZoomOut: zoom > minimumZoom,
+            canZoomIn: zoom < maximumZoom,
+            zoomOut: zoomOut,
+            resetZoom: resetZoom,
+            zoomIn: zoomIn
+        )
+#endif
     }
 
     private func fitWidth(in availableWidth: CGFloat) -> CGFloat {
@@ -165,12 +182,7 @@ struct PDFPageCarousel: View {
                 state = value.magnification
             }
             .onEnded { value in
-                zoom = clampedZoom(zoom * value.magnification)
-                if zoom <= 1 {
-                    panOffset = .zero
-                } else {
-                    panOffset = clampedPanOffset(panOffset, in: nil)
-                }
+                applyMagnification(value.magnification)
             }
     }
 
@@ -222,6 +234,35 @@ struct PDFPageCarousel: View {
         min(maximumZoom, max(minimumZoom, value))
     }
 
+    private func applyMagnification(_ magnification: CGFloat) {
+        zoom = clampedZoom(zoom * magnification)
+        if zoom <= 1 {
+            panOffset = .zero
+        } else {
+            panOffset = clampedPanOffset(panOffset, in: nil)
+        }
+    }
+
+    private func zoomIn() {
+        changeZoom(by: 0.25)
+    }
+
+    private func zoomOut() {
+        changeZoom(by: -0.25)
+    }
+
+    private func changeZoom(by amount: CGFloat) {
+        zoom = clampedZoom(zoom + amount)
+        if zoom <= 1 {
+            panOffset = .zero
+        }
+    }
+
+    private func resetZoom() {
+        zoom = 1
+        panOffset = .zero
+    }
+
     private func updatePosition() {
         position = pages.isEmpty
             ? .empty
@@ -263,26 +304,116 @@ struct PDFPagePosition: Equatable {
 }
 
 private struct RenderedPDFPage: Identifiable {
+    struct ID: Hashable {
+        let documentFingerprint: Int
+        let pageIndex: Int
+    }
+
     let index: Int
     let image: CGImage
+    let documentFingerprint: Int
 
-    var id: Int { index }
+    var id: ID { ID(documentFingerprint: documentFingerprint, pageIndex: index) }
+}
+
+private struct AdaptivePDFPageImage: View {
+    private let data: Data
+    private let page: RenderedPDFPage
+    private let zoom: CGFloat
+    @State private var image: CGImage
+
+    init(data: Data, page: RenderedPDFPage, zoom: CGFloat) {
+        self.data = data
+        self.page = page
+        self.zoom = zoom
+        _image = State(initialValue: page.image)
+    }
+
+    var body: some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .task(id: targetPixelHeight) {
+                guard image.height != targetPixelHeight else { return }
+
+                do {
+                    try await Task.sleep(for: .milliseconds(150))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+
+                let pdfData = data
+                let pageIndex = page.index
+                let pixelHeight = targetPixelHeight
+                let renderedImage = await Task.detached(
+                    priority: .userInitiated
+                ) {
+                    PDFPageRenderer.renderPage(
+                        data: pdfData,
+                        index: pageIndex,
+                        pixelHeight: pixelHeight
+                    )
+                }.value
+
+                guard !Task.isCancelled, let renderedImage else { return }
+                image = renderedImage
+            }
+    }
+
+    private var targetPixelHeight: Int {
+        PDFPageRenderer.pixelHeight(for: zoom)
+    }
 }
 
 private enum PDFPageRenderer {
+    private static let basePixelHeight = 1800
+
     static func render(data: Data) -> [RenderedPDFPage] {
         guard let document = PDFDocument(data: data) else { return [] }
+        let documentFingerprint = data.hashValue
         return (0..<document.pageCount).compactMap { index in
             guard let page = document.page(at: index),
                   let pdfPage = page.pageRef,
-                  let image = render(pdfPage: pdfPage) else { return nil }
-            return RenderedPDFPage(index: index, image: image)
+                  let image = render(
+                    pdfPage: pdfPage,
+                    pixelHeight: basePixelHeight
+                  ) else { return nil }
+            return RenderedPDFPage(
+                index: index,
+                image: image,
+                documentFingerprint: documentFingerprint
+            )
         }
     }
 
-    private static func render(pdfPage: CGPDFPage) -> CGImage? {
+    static func renderPage(
+        data: Data,
+        index: Int,
+        pixelHeight: Int
+    ) -> CGImage? {
+        guard let document = PDFDocument(data: data),
+              let page = document.page(at: index),
+              let pdfPage = page.pageRef else { return nil }
+        return render(pdfPage: pdfPage, pixelHeight: pixelHeight)
+    }
+
+    static func pixelHeight(for zoom: CGFloat) -> Int {
+        switch zoom {
+        case ...1.25: basePixelHeight
+        case ...1.75: 2700
+        case ...2.25: 3600
+        case ...2.75: 4500
+        case ...3.25: 5400
+        case ...3.75: 6300
+        default: 7200
+        }
+    }
+
+    private static func render(
+        pdfPage: CGPDFPage,
+        pixelHeight: Int
+    ) -> CGImage? {
         let bounds = pdfPage.getBoxRect(.cropBox)
-        let pixelHeight = 1800
         let pixelWidth = max(
             1,
             Int(CGFloat(pixelHeight) * bounds.width / bounds.height)

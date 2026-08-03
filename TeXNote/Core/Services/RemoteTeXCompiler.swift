@@ -8,10 +8,12 @@ import Foundation
 /// Success JSON: TypesettingResponse
 actor RemoteTeXCompiler: TeXCompiling {
     private let serverURL: URL
+    private let apiToken: String
     private let session: URLSession
 
-    init(serverURL: URL, session: URLSession = .shared) {
+    init(serverURL: URL, apiToken: String, session: URLSession = .shared) {
         self.serverURL = serverURL
+        self.apiToken = apiToken
         self.session = session
     }
 
@@ -30,6 +32,10 @@ actor RemoteTeXCompiler: TeXCompiling {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "Bearer \(apiToken)",
+            forHTTPHeaderField: "Authorization"
+        )
         request.timeoutInterval = 120
         request.httpBody = try JSONEncoder().encode(
             TypesettingRequest(
@@ -72,17 +78,20 @@ actor RemoteTeXCompiler: TeXCompiling {
 
 enum RemoteTeXCompilerFactory {
     static func isAvailable(for engine: TeXEngine) -> Bool {
-        serverURL != nil
+        configuration != nil
     }
 
     static func make() -> any TeXCompiling {
-        guard let url = serverURL else {
+        guard let configuration else {
             return UnavailableRemoteTeXCompiler()
         }
-        return RemoteTeXCompiler(serverURL: url)
+        return RemoteTeXCompiler(
+            serverURL: configuration.url,
+            apiToken: configuration.token
+        )
     }
 
-    private static var serverURL: URL? {
+    private static var configuration: (url: URL, token: String)? {
         guard let value = UserDefaults.standard.string(
                   forKey: "typesettingServerURL"
               ),
@@ -91,7 +100,9 @@ enum RemoteTeXCompilerFactory {
               scheme == "https" || scheme == "http" else {
             return nil
         }
-        return url
+        let token = TypesettingServerTokenStore.load()
+        guard !token.isEmpty else { return nil }
+        return (url, token)
     }
 }
 
@@ -102,7 +113,7 @@ private actor UnavailableRemoteTeXCompiler: TeXCompiling {
         files: [CardAsset]
     ) async throws -> CompilationResult {
         throw CompilationError.unavailable(
-            "版組サーバーが設定されていません。設定後、もう一度版組してください。"
+            "版組サーバーのURLまたはAPIトークンが設定されていません。"
         )
     }
 }

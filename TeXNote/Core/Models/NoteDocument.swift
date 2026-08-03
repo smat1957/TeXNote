@@ -9,7 +9,7 @@ struct NoteDocument: Codable, Sendable {
     var updatedAt: Date
 
     static var starter: NoteDocument {
-        NoteDocument(name: "名称未設定", cards: [TeXCard(title: "最初のカード")])
+        NoteDocument(name: "名称未設定", cards: [])
     }
 
     init(

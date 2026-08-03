@@ -45,7 +45,7 @@ final class NoteWorkspace: ObservableObject {
     }
 
     func requestOpen() {
-        guard !requiresPackageSaveConfirmation else {
+        guard !requiresOpenPackageSaveConfirmation else {
             pendingUnsavedAction = .openNote
             return
         }
@@ -156,7 +156,7 @@ final class NoteWorkspace: ObservableObject {
     }
 
     func openRecent(_ recentNote: RecentNote) {
-        guard !requiresPackageSaveConfirmation else {
+        guard !requiresOpenPackageSaveConfirmation else {
             pendingUnsavedAction = .openRecent(recentNote)
             return
         }
@@ -271,6 +271,10 @@ final class NoteWorkspace: ObservableObject {
 
     var requiresPackageSaveConfirmation: Bool {
         folderURL == nil || hasUnsavedPackageChanges
+    }
+
+    private var requiresOpenPackageSaveConfirmation: Bool {
+        !document.cards.isEmpty && requiresPackageSaveConfirmation
     }
 
     private func finishSuccessfulPackageSave() {

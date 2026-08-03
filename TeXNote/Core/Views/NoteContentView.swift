@@ -3,6 +3,7 @@ import SwiftUI
 struct NoteContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @ObservedObject var workspace: NoteWorkspace
+    private let settingsAction: (() -> Void)?
 
     @State private var selectedCardID: UUID?
     @State private var editingCardID: UUID?
@@ -11,8 +12,12 @@ struct NoteContentView: View {
     @State private var isShowingAbout = false
     @State private var isConfirmingDeletion = false
 
-    init(workspace: NoteWorkspace) {
+    init(
+        workspace: NoteWorkspace,
+        settingsAction: (() -> Void)? = nil
+    ) {
         self.workspace = workspace
+        self.settingsAction = settingsAction
         _selectedCardID = State(initialValue: workspace.document.cards.first?.id)
     }
 
@@ -58,10 +63,8 @@ struct NoteContentView: View {
                 selectedCardID = cardID
             }
         }
-        .alert("About TeXNote", isPresented: $isShowingAbout) {
-            Button("OK") {}
-        } message: {
-            Text("TeXで記述できるCardをまとめ、Packageとして持ち運べるノートアプリです。")
+        .sheet(isPresented: $isShowingAbout) {
+            TeXNoteAboutView()
         }
         .alert("Cardを削除しますか？", isPresented: $isConfirmingDeletion) {
             Button("削除", role: .destructive) {
@@ -160,9 +163,17 @@ struct NoteContentView: View {
                     workspace.requestSaveAs()
                 }
 
+                if let settingsAction {
+                    Divider()
+
+                    Button("版組サーバー設定", systemImage: "server.rack") {
+                        settingsAction()
+                    }
+                }
+
                 Divider()
 
-                Button("About TeXNote", systemImage: "info.circle") {
+                Button("TeXNoteについて", systemImage: "info.circle") {
                     isShowingAbout = true
                 }
             }

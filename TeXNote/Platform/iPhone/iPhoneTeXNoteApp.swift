@@ -6,7 +6,7 @@ struct iPhoneTeXNoteApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NoteContentView(workspace: workspace)
+            iOSTeXNoteRootView(workspace: workspace)
         }
     }
 }

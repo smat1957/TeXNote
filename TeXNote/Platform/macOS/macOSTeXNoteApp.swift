@@ -15,6 +15,10 @@ struct macOSTeXNoteApp: App {
                 }
         }
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                macOSAboutMenuCommand()
+            }
+
             CommandGroup(replacing: .newItem) {
                 Button("新規") {
                     workspace.requestNewNote()
@@ -62,5 +66,10 @@ struct macOSTeXNoteApp: App {
         Settings {
             macOSSettingsView()
         }
+
+        Window("TeXNoteについて", id: "about") {
+            TeXNoteAboutView()
+        }
+        .windowResizability(.contentSize)
     }
 }
