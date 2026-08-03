@@ -1,1 +1,5 @@
 moveTeXNote.sh
+
+build/
+**/__pycache__/
+*.pyc
