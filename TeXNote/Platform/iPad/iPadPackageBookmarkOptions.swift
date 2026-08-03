@@ -1,0 +1,1 @@
+typealias PlatformPackageBookmarkOptions = iOSPackageBookmarkOptions
