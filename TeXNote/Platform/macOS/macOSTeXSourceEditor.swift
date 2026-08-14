@@ -50,6 +50,7 @@ struct TeXSourceEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = context.coordinator.textView else { return }
+        guard !textView.hasMarkedText() else { return }
         if textView.string != text {
             context.coordinator.setText(text, selection: selection)
         } else if textView.selectedRange() != selection {
@@ -74,14 +75,22 @@ struct TeXSourceEditor: NSViewRepresentable {
         }
 
         func textDidChange(_ notification: Notification) {
-            guard !isApplyingHighlight, let textView else { return }
+            guard !isApplyingHighlight,
+                  let textView,
+                  !textView.hasMarkedText() else {
+                return
+            }
             parent.text = textView.string
             parent.selection = textView.selectedRange()
             highlight(textView)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard !isApplyingHighlight, let textView else { return }
+            guard !isApplyingHighlight,
+                  let textView,
+                  !textView.hasMarkedText() else {
+                return
+            }
             let newSelection = textView.selectedRange()
             if parent.selection != newSelection {
                 parent.selection = newSelection
@@ -98,6 +107,7 @@ struct TeXSourceEditor: NSViewRepresentable {
         }
 
         private func highlight(_ textView: NSTextView) {
+            guard !textView.hasMarkedText() else { return }
             let selectedRange = textView.selectedRange()
             isApplyingHighlight = true
             highlightAttributes(textView)
