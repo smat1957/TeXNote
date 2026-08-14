@@ -7,6 +7,7 @@ struct CardEditorView: View {
     @Binding var card: TeXCard
     let noteFolder: URL?
     let isNewCard: Bool
+    let showsCardTitleField: Bool
     let saved: () async -> Void
     let creationCommitted: () -> Void
 
@@ -14,8 +15,6 @@ struct CardEditorView: View {
     @State private var pictures: [CardAsset]
     @State private var files: [CardAsset]
     @State private var selectedTab: EditTab = .source
-    @State private var isChoosingResources = false
-    @State private var resourceKindToImport = CardResourceDirectory.pictures
     @State private var isCompiling = false
     @State private var isSaving = false
     @State private var hasSavedChangesInSession = false
@@ -30,12 +29,14 @@ struct CardEditorView: View {
         pictures: [CardAsset],
         files: [CardAsset],
         isNewCard: Bool,
+        showsCardTitleField: Bool = true,
         creationCommitted: @escaping () -> Void,
         saved: @escaping () async -> Void
     ) {
         _card = card
         self.noteFolder = noteFolder
         self.isNewCard = isNewCard
+        self.showsCardTitleField = showsCardTitleField
         _pictures = State(initialValue: pictures)
         _files = State(initialValue: files)
         self.saved = saved
@@ -46,12 +47,14 @@ struct CardEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("カード名")
-                    .foregroundStyle(.secondary)
+                if showsCardTitleField {
+                    Text("カード名")
+                        .foregroundStyle(.secondary)
 
-                TextField("カード名", text: $draft.title)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 240)
+                    TextField("カード名", text: $draft.title)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 240)
+                }
 
                 Spacer()
 
@@ -97,10 +100,11 @@ struct CardEditorView: View {
             Group {
                 switch selectedTab {
                 case .source:
-                    TextEditor(text: $draft.body)
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(12)
+                    TeXCodeEditor(
+                        text: $draft.body,
+                        placeholder: "TeX本文を入力します"
+                    )
+                    .padding(8)
                 case .settings:
                     settings
                 case .resources:
@@ -118,16 +122,9 @@ struct CardEditorView: View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(.separator, lineWidth: 1)
             }
-            .padding(20)
+            .padding(12)
         }
         .background(Color.gray.opacity(0.10))
-        .fileImporter(
-            isPresented: $isChoosingResources,
-            allowedContentTypes: allowedResourceTypes,
-            allowsMultipleSelection: true
-        ) { result in
-            importSelectedResources(result)
-        }
         .alert(
             "ファイルを操作できません",
             isPresented: Binding(
@@ -169,44 +166,68 @@ struct CardEditorView: View {
     }
 
     private var settings: some View {
-        Form {
-            Picker("版組エンジン", selection: $draft.engine) {
-                ForEach(TeXEngine.allCases) { engine in
-                    Text(engine.displayName).tag(engine)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("版組エンジン")
+                Spacer()
+                Picker("版組エンジン", selection: $draft.engine) {
+                    ForEach(TeXEngine.allCases) { engine in
+                        Text(engine.displayName).tag(engine)
+                    }
                 }
+                .labelsHidden()
+                .frame(maxWidth: 260)
             }
 
-            Section("documentclass") {
+            GroupBox("documentclass") {
+                VStack(alignment: .leading, spacing: 6) {
                 TextField("documentclass", text: $draft.documentClassLine)
-                    .labelsHidden()
                     .font(.system(.body, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
 
                 Text("\\documentclass から閉じ波括弧までの1行を入力します。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Section("Preamble") {
-                TextEditor(text: $draft.preamble)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 220)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Preamble")
+                    .font(.headline)
+                TeXCodeEditor(
+                    text: $draft.preamble,
+                    placeholder: "\\usepackage などを入力します"
+                )
+                .frame(minHeight: 220, maxHeight: .infinity)
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var resources: some View {
         Form {
             Section("画像") {
                 HStack {
-                    Button("画像を追加…", systemImage: "photo.badge.plus") {
-                        beginImporting(.pictures)
+                    ResourceImportButton(
+                        title: "画像を追加…",
+                        systemImage: "photo.badge.plus",
+                        allowedContentTypes: [.image, .pdf]
+                    ) {
+                        prepareResourceImport()
+                    } completed: { result in
+                        importSelectedResources(result, kind: .pictures)
                     }
 
-                    Button("ファイルを追加…", systemImage: "doc.badge.plus") {
-                        beginImporting(.files)
+                    ResourceImportButton(
+                        title: "ファイルを追加…",
+                        systemImage: "doc.badge.plus",
+                        allowedContentTypes: [.data]
+                    ) {
+                        prepareResourceImport()
+                    } completed: { result in
+                        importSelectedResources(result, kind: .files)
                     }
                 }
 
@@ -347,16 +368,19 @@ struct CardEditorView: View {
         }
     }
 
-    private func importSelectedResources(_ result: Result<[URL], Error>) {
+    private func importSelectedResources(
+        _ result: Result<[URL], Error>,
+        kind: CardResourceDirectory
+    ) {
         do {
             let urls = try result.get()
             let imported = try NoteFolderStore.importResources(
                 from: urls,
                 for: draft,
-                kind: resourceKindToImport,
+                kind: kind,
                 into: noteFolder
             )
-            switch resourceKindToImport {
+            switch kind {
             case .pictures:
                 pictures = imported
             case .files:
@@ -372,24 +396,14 @@ struct CardEditorView: View {
         }
     }
 
-    private var allowedResourceTypes: [UTType] {
-        switch resourceKindToImport {
-        case .pictures:
-            [.image, .pdf]
-        case .files:
-            [.data]
-        }
-    }
-
-    private func beginImporting(_ kind: CardResourceDirectory) {
+    private func prepareResourceImport() -> Bool {
         guard noteFolder != nil else {
             resourceError = NoteFolderError
                 .noteMustBeSavedBeforeAddingResources
                 .localizedDescription
-            return
+            return false
         }
-        resourceKindToImport = kind
-        isChoosingResources = true
+        return true
     }
 
     private func resourceRow(
@@ -444,6 +458,29 @@ struct CardEditorView: View {
         } catch {
             resourceError = error.localizedDescription
         }
+    }
+}
+
+private struct ResourceImportButton: View {
+    let title: String
+    let systemImage: String
+    let allowedContentTypes: [UTType]
+    let prepare: () -> Bool
+    let completed: (Result<[URL], Error>) -> Void
+
+    @State private var isPresented = false
+
+    var body: some View {
+        Button(title, systemImage: systemImage) {
+            guard prepare() else { return }
+            isPresented = true
+        }
+        .fileImporter(
+            isPresented: $isPresented,
+            allowedContentTypes: allowedContentTypes,
+            allowsMultipleSelection: true,
+            onCompletion: completed
+        )
     }
 }
 

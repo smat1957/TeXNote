@@ -5,13 +5,15 @@ extension View {
     func noteWorkspacePresentation(
         workspace: NoteWorkspace,
         editingCardID: Binding<UUID?>,
-        newCardID: Binding<UUID?>
+        newCardID: Binding<UUID?>,
+        showsCardTitleField: Bool = true
     ) -> some View {
         modifier(
             NoteWorkspacePresentationModifier(
                 workspace: workspace,
                 editingCardID: editingCardID,
-                newCardID: newCardID
+                newCardID: newCardID,
+                showsCardTitleField: showsCardTitleField
             )
         )
     }
@@ -21,6 +23,7 @@ private struct NoteWorkspacePresentationModifier: ViewModifier {
     @ObservedObject var workspace: NoteWorkspace
     @Binding var editingCardID: UUID?
     @Binding var newCardID: UUID?
+    let showsCardTitleField: Bool
 
     func body(content: Content) -> some View {
         GeometryReader { geometry in
@@ -54,6 +57,7 @@ private struct NoteWorkspacePresentationModifier: ViewModifier {
                             from: workspace.folderURL
                         ),
                         isNewCard: newCardID == cardID,
+                        showsCardTitleField: showsCardTitleField,
                         creationCommitted: {
                             if newCardID == cardID {
                                 newCardID = nil
@@ -63,8 +67,8 @@ private struct NoteWorkspacePresentationModifier: ViewModifier {
                         await workspace.cardEditorDidSave()
                     }
                     .frame(
-                        width: min(1_100, geometry.size.width),
-                        height: min(760, geometry.size.height)
+                        width: min(1_200, geometry.size.width),
+                        height: geometry.size.height
                     )
                 }
             }

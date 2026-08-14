@@ -23,6 +23,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Platform/iOS/iOSTeXSourceEditor.swift,
 				Platform/iOS/iOSTeXNoteRootView.swift,
 				Platform/iPad/Info.plist,
 				Platform/iPad/iPadPackageBookmarkOptions.swift,
@@ -50,6 +51,7 @@
 				Platform/macOS/macOSPackageBookmarkOptions.swift,
 				Platform/macOS/macOSPDFZoomControls.swift,
 				Platform/macOS/macOSSettingsView.swift,
+				Platform/macOS/macOSTeXSourceEditor.swift,
 				Platform/macOS/macOSTeXCompilerFactory.swift,
 				Platform/macOS/macOSTeXNoteApp.swift,
 			);
@@ -70,6 +72,7 @@
 				Platform/macOS/macOSPackageBookmarkOptions.swift,
 				Platform/macOS/macOSPDFZoomControls.swift,
 				Platform/macOS/macOSSettingsView.swift,
+				Platform/macOS/macOSTeXSourceEditor.swift,
 				Platform/macOS/macOSTeXCompilerFactory.swift,
 				Platform/macOS/macOSTeXNoteApp.swift,
 			);

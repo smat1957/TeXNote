@@ -3,6 +3,7 @@ import SwiftUI
 struct NoteContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @ObservedObject var workspace: NoteWorkspace
+    private let editsCardTitleOnPreview: Bool
     private let settingsAction: (() -> Void)?
 
     @State private var selectedCardID: UUID?
@@ -14,9 +15,11 @@ struct NoteContentView: View {
 
     init(
         workspace: NoteWorkspace,
+        editsCardTitleOnPreview: Bool = false,
         settingsAction: (() -> Void)? = nil
     ) {
         self.workspace = workspace
+        self.editsCardTitleOnPreview = editsCardTitleOnPreview
         self.settingsAction = settingsAction
         _selectedCardID = State(initialValue: workspace.document.cards.first?.id)
     }
@@ -27,13 +30,17 @@ struct NoteContentView: View {
 
             Divider()
 
-            if let selectedCard {
+            if let selectedCardBinding {
                 CardDetailView(
-                    card: selectedCard,
+                    card: selectedCardBinding,
+                    editsTitle: editsCardTitleOnPreview,
+                    titleChanged: {
+                        workspace.documentDidChange()
+                    },
                     canSelectNextCard: canSelectNextCard,
                     canSelectPreviousCard: canSelectPreviousCard,
                     editAction: {
-                        editingCardID = selectedCard.id
+                        editingCardID = selectedCardBinding.wrappedValue.id
                     },
                     addRelatedAction: addRelatedCard,
                     deleteAction: {
@@ -42,7 +49,7 @@ struct NoteContentView: View {
                     nextCardAction: selectNextCard,
                     previousCardAction: selectPreviousCard
                 )
-                .id(selectedCard.id)
+                .id(selectedCardBinding.wrappedValue.id)
             } else {
                 ContentUnavailableView {
                     Label("Cardがありません", systemImage: "rectangle.stack")
@@ -56,7 +63,8 @@ struct NoteContentView: View {
         .noteWorkspacePresentation(
             workspace: workspace,
             editingCardID: $editingCardID,
-            newCardID: $newCardID
+            newCardID: $newCardID,
+            showsCardTitleField: !editsCardTitleOnPreview
         )
         .sheet(isPresented: $isShowingSearch) {
             CardSearchView(cards: workspace.document.cards) { cardID in
@@ -187,6 +195,11 @@ struct NoteContentView: View {
     private var selectedCard: TeXCard? {
         guard let selectedCardID else { return nil }
         return workspace.document.cards.first { $0.id == selectedCardID }
+    }
+
+    private var selectedCardBinding: Binding<TeXCard>? {
+        guard let index = selectedIndex else { return nil }
+        return $workspace.document.cards[index]
     }
 
     private var selectedIndex: Int? {

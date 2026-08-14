@@ -3,7 +3,9 @@ import SwiftUI
 struct CardDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var pdfPosition = PDFPagePosition.empty
-    let card: TeXCard
+    @Binding var card: TeXCard
+    let editsTitle: Bool
+    let titleChanged: () -> Void
     let canSelectNextCard: Bool
     let canSelectPreviousCard: Bool
     let editAction: () -> Void
@@ -60,9 +62,27 @@ struct CardDetailView: View {
 
     private var cardTitle: some View {
         VStack(spacing: 2) {
-            Text(card.title)
-                .font(.headline)
-                .lineLimit(1)
+            Group {
+                if editsTitle {
+                    TextField("Card名", text: $card.title)
+                        .textFieldStyle(.plain)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(
+                            .quaternary,
+                            in: RoundedRectangle(cornerRadius: 8)
+                        )
+                        .onChange(of: card.title) {
+                            titleChanged()
+                        }
+                } else {
+                    Text(card.title)
+                        .lineLimit(1)
+                }
+            }
+            .font(.headline)
+            .frame(maxWidth: 320)
             HStack(spacing: 8) {
                 Text(card.pdfStatus.label)
                     .foregroundStyle(statusColor)

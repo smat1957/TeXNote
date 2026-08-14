@@ -2,11 +2,21 @@ import SwiftUI
 
 struct iOSTeXNoteRootView: View {
     @ObservedObject var workspace: NoteWorkspace
+    let editsCardTitleOnPreview: Bool
     @State private var isShowingSettings = false
+
+    init(
+        workspace: NoteWorkspace,
+        editsCardTitleOnPreview: Bool = false
+    ) {
+        self.workspace = workspace
+        self.editsCardTitleOnPreview = editsCardTitleOnPreview
+    }
 
     var body: some View {
         NoteContentView(
             workspace: workspace,
+            editsCardTitleOnPreview: editsCardTitleOnPreview,
             settingsAction: {
                 isShowingSettings = true
             }
