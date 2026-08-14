@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -10,6 +11,11 @@ struct macOSTeXNoteApp: App {
         WindowGroup {
             NoteContentView(workspace: workspace)
                 .frame(minWidth: 900, minHeight: 600)
+                .background {
+                    macOSMainWindowReader { window in
+                        applicationDelegate.configureMainWindow(window)
+                    }
+                }
                 .onAppear {
                     applicationDelegate.configure(workspace: workspace)
                 }
@@ -71,5 +77,37 @@ struct macOSTeXNoteApp: App {
             TeXNoteAboutView()
         }
         .windowResizability(.contentSize)
+    }
+}
+
+private struct macOSMainWindowReader: NSViewRepresentable {
+    let resolve: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> macOSMainWindowReaderView {
+        let view = macOSMainWindowReaderView()
+        view.resolve = resolve
+        return view
+    }
+
+    func updateNSView(
+        _ nsView: macOSMainWindowReaderView,
+        context: Context
+    ) {
+        nsView.resolve = resolve
+        nsView.resolveWindowIfAvailable()
+    }
+}
+
+private final class macOSMainWindowReaderView: NSView {
+    var resolve: ((NSWindow) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        resolveWindowIfAvailable()
+    }
+
+    func resolveWindowIfAvailable() {
+        guard let window else { return }
+        resolve?(window)
     }
 }

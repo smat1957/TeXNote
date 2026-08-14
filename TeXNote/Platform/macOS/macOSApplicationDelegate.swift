@@ -3,6 +3,7 @@ import AppKit
 @MainActor
 final class macOSApplicationDelegate: NSObject, NSApplicationDelegate {
     private weak var workspace: NoteWorkspace?
+    private weak var mainWindowCloseButton: NSButton?
     private var mayTerminate = false
 
     func configure(workspace: NoteWorkspace) {
@@ -13,6 +14,22 @@ final class macOSApplicationDelegate: NSObject, NSApplicationDelegate {
             self.mayTerminate = true
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    func configureMainWindow(_ window: NSWindow) {
+        guard let closeButton = window.standardWindowButton(.closeButton),
+              mainWindowCloseButton !== closeButton else {
+            return
+        }
+
+        mainWindowCloseButton = closeButton
+        closeButton.target = self
+        closeButton.action = #selector(requestMainWindowTermination(_:))
+    }
+
+    @objc
+    private func requestMainWindowTermination(_ sender: Any?) {
+        NSApplication.shared.terminate(sender)
     }
 
     func applicationShouldTerminate(
