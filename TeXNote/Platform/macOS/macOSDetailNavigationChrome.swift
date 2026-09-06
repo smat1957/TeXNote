@@ -1,5 +1,22 @@
 import SwiftUI
 
+struct PlatformSidebarBottomBar<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack {
+            content
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+}
+
 struct PlatformSidebarNavigationChromeModifier: ViewModifier {
     func body(content: Content) -> some View {
         content

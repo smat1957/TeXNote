@@ -149,12 +149,30 @@ struct NoteContentView: View {
     }
 
     private var cardList: some View {
-        List(selection: $selectedCardID) {
-            ForEach(workspace.document.cards) { card in
-                Text(card.title)
-                    .tag(card.id)
+        VStack(spacing: 0) {
+            List(selection: $selectedCardID) {
+                ForEach(workspace.document.cards) { card in
+                    Text(card.title)
+                        .tag(card.id)
+                }
+                .onMove(perform: moveCards)
             }
-            .onMove(perform: moveCards)
+
+            Divider()
+
+            PlatformSidebarBottomBar {
+                Button("新規作成", systemImage: "square.and.pencil") {
+                    addCard()
+                }
+
+                Spacer()
+
+                Button("インポート", systemImage: "square.and.arrow.down") {
+                    workspace.requestTeXDocumentImport(
+                        insertingAfter: selectedCardID
+                    )
+                }
+            }
         }
     }
 
@@ -338,11 +356,6 @@ struct NoteContentView: View {
             }
             .platformNoteActionControl()
 
-            Button("新しいCard", systemImage: "square.and.pencil") {
-                addCard()
-            }
-            .platformNoteActionControl()
-
             Button(
                 "最新のCard",
                 systemImage: PlatformNoteActionSymbols.latestCard
@@ -376,15 +389,6 @@ struct NoteContentView: View {
                     systemImage: "square.and.arrow.up.on.square"
                 ) {
                     workspace.requestSaveAs()
-                }
-
-                Button(
-                    "TeX文書のインポート…",
-                    systemImage: "square.and.arrow.down"
-                ) {
-                    workspace.requestTeXDocumentImport(
-                        insertingAfter: selectedCardID
-                    )
                 }
 
                 if let settingsAction {
