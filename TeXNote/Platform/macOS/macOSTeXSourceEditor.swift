@@ -23,7 +23,7 @@ struct TeXSourceEditor: NSViewRepresentable {
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = showsLineNumbers
 
-        let textView = macOSTeXEditorTextView()
+        let textView = NSTextView()
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.importsGraphics = false
@@ -201,44 +201,6 @@ struct TeXSourceEditor: NSViewRepresentable {
                 length: min(max(0, range.length), length - location)
             )
         }
-    }
-}
-
-private final class macOSTeXEditorTextView: NSTextView {
-    override func menu(for event: NSEvent) -> NSMenu? {
-        window?.makeFirstResponder(self)
-
-        let menu = NSMenu(title: "編集")
-        if selectedRange().length == 0 {
-            menu.addItem(
-                withTitle: "選択",
-                action: #selector(selectWord(_:)),
-                keyEquivalent: ""
-            )
-        } else {
-            menu.addItem(
-                withTitle: "カット",
-                action: #selector(cut(_:)),
-                keyEquivalent: ""
-            )
-            menu.addItem(
-                withTitle: "コピー",
-                action: #selector(copy(_:)),
-                keyEquivalent: ""
-            )
-        }
-        menu.addItem(
-            withTitle: "ペースト",
-            action: #selector(paste(_:)),
-            keyEquivalent: ""
-        )
-        menu.addItem(.separator())
-        menu.addItem(
-            withTitle: "すべて選択",
-            action: #selector(selectAll(_:)),
-            keyEquivalent: ""
-        )
-        return menu
     }
 }
 

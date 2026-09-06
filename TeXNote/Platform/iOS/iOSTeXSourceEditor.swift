@@ -13,8 +13,9 @@ struct TeXSourceEditor: UIViewRepresentable {
         Coordinator(parent: self)
     }
 
-    func makeUIView(context: Context) -> UITextView {
-        let textView = TeXLineNumberTextView()
+    func makeUIView(context: Context) -> TeXEditorContainerView {
+        let container = TeXEditorContainerView()
+        let textView = container.textView
         textView.delegate = context.coordinator
         textView.backgroundColor = .clear
         textView.font = .monospacedSystemFont(ofSize: 16, weight: .regular)
@@ -26,23 +27,20 @@ struct TeXSourceEditor: UIViewRepresentable {
         textView.autocapitalizationType = .none
         textView.spellCheckingType = .no
         textView.keyboardDismissMode = .interactive
-        textView.isScrollEnabled = true
-        textView.alwaysBounceVertical = true
-        textView.showsVerticalScrollIndicator = true
-        textView.textContainer.heightTracksTextView = false
-        textView.showsLineNumbers = showsLineNumbers
-        textView.firstLineNumber = firstLineNumber
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 5, bottom: 8, right: 5)
+        container.showsLineNumbers = showsLineNumbers
+        container.firstLineNumber = firstLineNumber
         context.coordinator.textView = textView
+        context.coordinator.container = container
         context.coordinator.setText(text, selection: selection)
-        return textView
+        return container
     }
 
-    func updateUIView(_ textView: UITextView, context: Context) {
+    func updateUIView(_ container: TeXEditorContainerView, context: Context) {
         context.coordinator.parent = self
-        if let lineNumberTextView = textView as? TeXLineNumberTextView {
-            lineNumberTextView.showsLineNumbers = showsLineNumbers
-            lineNumberTextView.firstLineNumber = firstLineNumber
-        }
+        let textView = container.textView
+        container.showsLineNumbers = showsLineNumbers
+        container.firstLineNumber = firstLineNumber
         if textView.text != text {
             context.coordinator.setText(text, selection: selection)
         } else if context.coordinator.searchConfigurationChanged {
@@ -52,17 +50,6 @@ struct TeXSourceEditor: UIViewRepresentable {
             textView.selectedRange = range
             textView.scrollRangeToVisible(range)
         }
-    }
-
-    func sizeThatFits(
-        _ proposal: ProposedViewSize,
-        uiView: UITextView,
-        context: Context
-    ) -> CGSize? {
-        guard let width = proposal.width, let height = proposal.height else {
-            return nil
-        }
-        return CGSize(width: width, height: height)
     }
 
     private func clamped(_ range: NSRange, length: Int) -> NSRange {
@@ -76,6 +63,7 @@ struct TeXSourceEditor: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: TeXSourceEditor
         weak var textView: UITextView?
+        weak var container: TeXEditorContainerView?
         private var isApplyingHighlight = false
         var lastSearchText = ""
         var lastSearchIsCaseSensitive = false
@@ -94,6 +82,7 @@ struct TeXSourceEditor: UIViewRepresentable {
             parent.text = textView.text
             parent.selection = textView.selectedRange
             highlight(textView)
+            container?.refreshLineNumbers()
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
@@ -103,46 +92,8 @@ struct TeXSourceEditor: UIViewRepresentable {
             }
         }
 
-        func textView(
-            _ textView: UITextView,
-            editMenuForTextIn range: NSRange,
-            suggestedActions: [UIMenuElement]
-        ) -> UIMenu? {
-            var actions: [UIMenuElement] = []
-            if range.length == 0 {
-                actions.append(
-                    UIAction(title: "選択") { [weak textView] _ in
-                        textView?.select(nil)
-                    }
-                )
-            } else {
-                actions.append(
-                    UIAction(title: "カット") { [weak textView] _ in
-                        textView?.cut(nil)
-                    }
-                )
-                actions.append(
-                    UIAction(title: "コピー") { [weak textView] _ in
-                        textView?.copy(nil)
-                    }
-                )
-            }
-            if textView.canPerformAction(
-                #selector(UIResponderStandardEditActions.paste(_:)),
-                withSender: nil
-            ) {
-                actions.append(
-                    UIAction(title: "ペースト") { [weak textView] _ in
-                        textView?.paste(nil)
-                    }
-                )
-            }
-            actions.append(
-                UIAction(title: "すべて選択") { [weak textView] _ in
-                    textView?.selectAll(nil)
-                }
-            )
-            return UIMenu(children: actions)
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            container?.refreshLineNumbers()
         }
 
         func setText(_ text: String, selection: NSRange) {
@@ -153,6 +104,7 @@ struct TeXSourceEditor: UIViewRepresentable {
             highlightAttributes(textView)
             textView.scrollRangeToVisible(textView.selectedRange)
             isApplyingHighlight = false
+            container?.refreshLineNumbers()
         }
 
         private func highlight(_ textView: UITextView) {
@@ -172,7 +124,6 @@ struct TeXSourceEditor: UIViewRepresentable {
                       query: parent.searchText,
                       caseSensitive: parent.searchIsCaseSensitive
                   ).first else { return }
-            textView.layoutManager.ensureLayout(for: textView.textContainer)
             textView.scrollRangeToVisible(firstMatch)
         }
 
@@ -199,6 +150,10 @@ struct TeXSourceEditor: UIViewRepresentable {
                 )
             }
             storage.endEditing()
+            textView.typingAttributes = [
+                .font: UIFont.monospacedSystemFont(ofSize: 16, weight: .regular),
+                .foregroundColor: UIColor.label
+            ]
             lastSearchText = parent.searchText
             lastSearchIsCaseSensitive = parent.searchIsCaseSensitive
         }
@@ -222,58 +177,90 @@ struct TeXSourceEditor: UIViewRepresentable {
     }
 }
 
-private final class TeXLineNumberTextView: UITextView {
+/// 標準の編集操作を保つため、行番号をUITextViewの外側に配置する。
+final class TeXEditorContainerView: UIView {
+    let textView = UITextView()
+    private lazy var lineNumberView = TeXLineNumberView(textView: textView)
+
     var firstLineNumber = 1 {
-        didSet { setNeedsDisplay() }
+        didSet {
+            guard firstLineNumber != oldValue else { return }
+            lineNumberView.firstLineNumber = firstLineNumber
+        }
     }
 
     var showsLineNumbers = false {
         didSet {
-            textContainerInset = UIEdgeInsets(
-                top: 8,
-                left: showsLineNumbers ? 43 : 5,
-                bottom: 8,
-                right: 5
-            )
-            setNeedsDisplay()
+            guard showsLineNumbers != oldValue else { return }
+            lineNumberView.isHidden = !showsLineNumbers
+            setNeedsLayout()
         }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        addSubview(lineNumberView)
+        addSubview(textView)
+        lineNumberView.isUserInteractionEnabled = false
+        lineNumberView.backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-
-        let containerWidth = max(
-            0,
-            bounds.width - textContainerInset.left - textContainerInset.right
+        let lineNumberWidth: CGFloat = showsLineNumbers ? 42 : 0
+        lineNumberView.frame = CGRect(
+            x: 0,
+            y: 0,
+            width: lineNumberWidth,
+            height: bounds.height
         )
-        if textContainer.size.width != containerWidth
-            || textContainer.size.height != CGFloat.greatestFiniteMagnitude {
-            textContainer.size = CGSize(
-                width: containerWidth,
-                height: CGFloat.greatestFiniteMagnitude
-            )
-        }
+        textView.frame = CGRect(
+            x: lineNumberWidth,
+            y: 0,
+            width: max(0, bounds.width - lineNumberWidth),
+            height: bounds.height
+        )
+        refreshLineNumbers()
+    }
 
-        layoutManager.ensureLayout(for: textContainer)
-        let laidOutHeight = layoutManager.usedRect(for: textContainer).maxY
-            + textContainerInset.top
-            + textContainerInset.bottom
-        let requiredHeight = max(bounds.height, laidOutHeight)
-        if abs(contentSize.height - requiredHeight) > 0.5 {
-            contentSize = CGSize(width: bounds.width, height: requiredHeight)
-        }
+    func refreshLineNumbers() {
+        guard showsLineNumbers else { return }
+        lineNumberView.setNeedsDisplay()
+    }
+}
 
-        if showsLineNumbers { setNeedsDisplay() }
+/// UITextViewへ入力イベントを追加せず、現在の表示範囲の行番号だけを描画する。
+private final class TeXLineNumberView: UIView {
+    private weak var textView: UITextView?
+    var firstLineNumber = 1 {
+        didSet { setNeedsDisplay() }
+    }
+
+    init(textView: UITextView) {
+        self.textView = textView
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     override func draw(_ rect: CGRect) {
         super.draw(rect)
-        guard showsLineNumbers else { return }
+        guard let textView else { return }
 
-        let string = text as NSString
-        let visibleTextContainerRect = bounds.offsetBy(
-            dx: -textContainerInset.left,
-            dy: -textContainerInset.top
+        let layoutManager = textView.layoutManager
+        let textContainer = textView.textContainer
+        layoutManager.ensureLayout(for: textContainer)
+        let string = textView.text as NSString
+        let visibleTextContainerRect = textView.bounds.offsetBy(
+            dx: -textView.textContainerInset.left,
+            dy: -textView.textContainerInset.top
         )
         let visibleGlyphRange = layoutManager.glyphRange(
             forBoundingRect: visibleTextContainerRect,
@@ -301,8 +288,10 @@ private final class TeXLineNumberTextView: UITextView {
                 let size = label.size(withAttributes: attributes)
                 label.draw(
                     at: CGPoint(
-                        x: textContainerInset.left - size.width - 7,
-                        y: fragment.minY + textContainerInset.top
+                        x: bounds.width - size.width - 7,
+                        y: fragment.minY
+                            + textView.textContainerInset.top
+                            - textView.contentOffset.y
                     ),
                     withAttributes: attributes
                 )
