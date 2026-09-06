@@ -18,6 +18,9 @@ struct PlatformSidebarBottomBar<Content: View>: View {
 }
 
 struct PlatformSidebarNavigationChromeModifier: ViewModifier {
+    let showsReturnToDetail: Bool
+    let returnToDetail: () -> Void
+
     func body(content: Content) -> some View {
         content
     }

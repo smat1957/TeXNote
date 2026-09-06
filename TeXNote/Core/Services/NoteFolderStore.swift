@@ -4,10 +4,7 @@ enum NotePackageNaming {
     static let pathExtension = "texnote"
 
     static func folderName(for noteName: String) -> String {
-        let suffix = ".\(pathExtension)"
-        return noteName.lowercased().hasSuffix(suffix)
-            ? noteName
-            : noteName + suffix
+        noteName
     }
 
     static func noteName(for folderURL: URL) -> String {
@@ -129,7 +126,7 @@ enum NoteFolderStore {
                     for: sourceCard,
                     kind: kind
                 )
-                let assets = try resourcesForSaving(
+                let resourceFiles = try resourceFilesForSaving(
                     for: sourceCard,
                     kind: kind,
                     from: sourceFolder
@@ -141,8 +138,9 @@ enum NoteFolderStore {
                 )
                 directories.append(destinationFolder)
                 var savedPaths: [String] = []
-                for asset in assets {
-                    let destinationPath = "\(folderPath)/\(asset.fileName)"
+                for resourceFile in resourceFiles {
+                    let destinationPath =
+                        "\(folderPath)/\(resourceFile.fileName)"
                     let destinationURL = try packageDestinationURL(
                         for: destinationPath,
                         in: noteFolder
@@ -150,7 +148,7 @@ enum NoteFolderStore {
                     writes.append(
                         AtomicFileWrite(
                             url: destinationURL,
-                            data: asset.data
+                            copying: resourceFile.url
                         )
                     )
                     savedPaths.append(destinationPath)
@@ -167,24 +165,32 @@ enum NoteFolderStore {
 
             if let oldPDFPath = sourceCard.pdfRelativePath {
                 let pdfPath = canonicalPDFRelativePath(for: sourceCard)
-                let data: Data
-                if let currentData = sourceCard.pdfData {
-                    data = currentData
+                let pdfURL = try packageDestinationURL(
+                    for: pdfPath,
+                    in: noteFolder
+                )
+                if sourceCard.pdfNeedsSaving {
+                    guard let currentData = sourceCard.pdfData else {
+                        throw NoteFolderError.missingPDF(oldPDFPath)
+                    }
+                    writes.append(
+                        AtomicFileWrite(url: pdfURL, data: currentData)
+                    )
                 } else {
                     let sourcePDF = try safeURL(
                         for: oldPDFPath,
                         in: sourceFolder
                     )
-                    guard let storedData = try? Data(contentsOf: sourcePDF) else {
+                    guard let values = try? sourcePDF.resourceValues(
+                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                    ), values.isRegularFile == true,
+                       values.isSymbolicLink != true else {
                         throw NoteFolderError.missingPDF(oldPDFPath)
                     }
-                    data = storedData
+                    writes.append(
+                        AtomicFileWrite(url: pdfURL, copying: sourcePDF)
+                    )
                 }
-                let pdfURL = try packageDestinationURL(
-                    for: pdfPath,
-                    in: noteFolder
-                )
-                writes.append(AtomicFileWrite(url: pdfURL, data: data))
                 snapshot.cards[index].pdfRelativePath = pdfPath
             }
             snapshot.cards[index].pdfNeedsSaving = false
@@ -474,11 +480,11 @@ enum NoteFolderStore {
         "Cards/\(card.id.uuidString)/\(kind.folderName)"
     }
 
-    private static func resourcesForSaving(
+    private static func resourceFilesForSaving(
         for card: TeXCard,
         kind: CardResourceDirectory,
         from noteFolder: URL
-    ) throws -> [CardAsset] {
+    ) throws -> [ResourceFile] {
         let paths = resourcePaths(for: card, kind: kind)
         let sourceFolderPath = kind.relativePath(for: card)
         var seenFileNames: Set<String> = []
@@ -490,16 +496,21 @@ enum NoteFolderStore {
             guard let values = try? url.resourceValues(
                 forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
             ), values.isRegularFile == true,
-               values.isSymbolicLink != true,
-               let data = try? Data(contentsOf: url) else {
+               values.isSymbolicLink != true else {
                 throw NoteFolderError.missingResource(relativePath)
             }
-            let asset = CardAsset(relativePath: relativePath, data: data)
-            guard seenFileNames.insert(asset.fileName).inserted else {
+            let resourceFile = ResourceFile(url: url)
+            guard seenFileNames.insert(resourceFile.fileName).inserted else {
                 throw NoteFolderError.invalidStoredPath(relativePath)
             }
-            return asset
+            return resourceFile
         }
+    }
+
+    private struct ResourceFile {
+        let url: URL
+
+        var fileName: String { url.lastPathComponent }
     }
 
     private static func validateCanonicalPaths(for card: TeXCard) throws {

@@ -18,8 +18,28 @@ struct PlatformSidebarBottomBar<Content: View>: View {
 }
 
 struct PlatformSidebarNavigationChromeModifier: ViewModifier {
+    let showsReturnToDetail: Bool
+    let returnToDetail: () -> Void
+
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
+        if showsReturnToDetail {
+            content
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    HStack {
+                        Button("Noteへ戻る", systemImage: "chevron.right") {
+                            returnToDetail()
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.bar)
+                }
+        } else {
+            content
+        }
     }
 }
 

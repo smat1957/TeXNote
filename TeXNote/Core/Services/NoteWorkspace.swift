@@ -97,22 +97,16 @@ final class NoteWorkspace: ObservableObject {
     }
 
     func requestSave() {
-        if let folderURL,
-           NotePackageNaming.matches(folderURL: folderURL, noteName: noteName) {
-            fileOperationMessage = "保存しています…"
-            Task { [weak self] in
-                guard let self else { return }
-                await Task.yield()
-                self.errorMessage = nil
-                await self.save(toExistingFolder: folderURL)
-                self.fileOperationMessage = nil
-                if self.errorMessage == nil {
-                    self.fileOperationCompletionMessage = "保存が完了しました。"
-                }
-            }
-        } else {
-            requestSaveAs()
+        let name = noteName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard Self.isValidNoteName(name) else {
+            errorMessage = NoteFolderError.invalidName.localizedDescription
+            return
         }
+        pendingSaveAsName = name
+        pendingFolderAction = .saveParent
+        presentFileSelection(.packageFolder)
     }
 
     func requestSaveAs() {

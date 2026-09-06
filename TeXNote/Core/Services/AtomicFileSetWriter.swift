@@ -2,7 +2,27 @@ import Foundation
 
 struct AtomicFileWrite: Sendable {
     let url: URL
-    let data: Data
+    let source: Source
+
+    enum Source: Sendable {
+        case data(Data)
+        case file(URL)
+    }
+
+    init(url: URL, data: Data) {
+        self.url = url
+        source = .data(data)
+    }
+
+    init(url: URL, copying sourceURL: URL) {
+        self.url = url
+        source = .file(sourceURL)
+    }
+
+    var isNoOpFileCopy: Bool {
+        guard case .file(let sourceURL) = source else { return false }
+        return sourceURL.standardizedFileURL == url.standardizedFileURL
+    }
 }
 
 enum AtomicFileSetWriter {
@@ -34,18 +54,31 @@ enum AtomicFileSetWriter {
             $0.path.count < $1.path.count
         }
 
-        let backups = try uniqueWrites.map { write in
-            let path = write.url.standardizedFileURL.path
-            if manager.fileExists(atPath: path) {
-                return Backup(
-                    url: write.url,
-                    data: try Data(contentsOf: write.url)
-                )
-            }
-            return Backup(url: write.url, data: nil)
+        let backupFolder = manager.temporaryDirectory.appending(
+            path: "TeXNote-AtomicBackup-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try manager.createDirectory(
+            at: backupFolder,
+            withIntermediateDirectories: false
+        )
+        defer { try? manager.removeItem(at: backupFolder) }
+
+        let backups = try uniqueWrites.enumerated().map { index, write in
+            try backup(
+                write.url,
+                index: index,
+                in: backupFolder,
+                manager: manager
+            )
         }
-        let removalBackups = try filesToRemove.map { url in
-            Backup(url: url, data: try Data(contentsOf: url))
+        let removalBackups = try filesToRemove.enumerated().map { index, url in
+            try backup(
+                url,
+                index: uniqueWrites.count + index,
+                in: backupFolder,
+                manager: manager
+            )
         }
 
         var createdDirectories: [URL] = []
@@ -72,7 +105,7 @@ enum AtomicFileSetWriter {
             }
 
             for write in uniqueWrites {
-                try write.data.write(to: write.url, options: .atomic)
+                try perform(write, manager: manager)
                 completedWriteCount += 1
             }
             for url in filesToRemove {
@@ -93,14 +126,10 @@ enum AtomicFileSetWriter {
                 )
             }
             for backup in removalBackups.prefix(completedRemovalCount).reversed() {
-                try? backup.data?.write(to: backup.url, options: .atomic)
+                restore(backup, manager: manager)
             }
             for backup in backups.prefix(completedWriteCount).reversed() {
-                if let data = backup.data {
-                    try? data.write(to: backup.url, options: .atomic)
-                } else {
-                    try? manager.removeItem(at: backup.url)
-                }
+                restore(backup, manager: manager)
             }
             for directory in createdDirectories.reversed() {
                 let contents = try? manager.contentsOfDirectory(
@@ -130,11 +159,90 @@ enum AtomicFileSetWriter {
                 throw CocoaError(.fileWriteFileExists)
             }
         }
-        return writes
+        return writes.filter { !$0.isNoOpFileCopy }
     }
 
     private struct Backup {
         let url: URL
-        let data: Data?
+        let backupURL: URL?
+    }
+
+    private static func backup(
+        _ url: URL,
+        index: Int,
+        in backupFolder: URL,
+        manager: FileManager
+    ) throws -> Backup {
+        guard manager.fileExists(atPath: url.path) else {
+            return Backup(url: url, backupURL: nil)
+        }
+        let backupURL = backupFolder.appending(path: String(index))
+        try streamCopy(from: url, to: backupURL, manager: manager)
+        return Backup(url: url, backupURL: backupURL)
+    }
+
+    private static func perform(
+        _ write: AtomicFileWrite,
+        manager: FileManager
+    ) throws {
+        switch write.source {
+        case .data(let data):
+            try data.write(to: write.url, options: .atomic)
+        case .file(let sourceURL):
+            let temporaryURL = write.url.deletingLastPathComponent().appending(
+                path: ".texnote-copy-\(UUID().uuidString)"
+            )
+            defer { try? manager.removeItem(at: temporaryURL) }
+            try streamCopy(
+                from: sourceURL,
+                to: temporaryURL,
+                manager: manager
+            )
+            if manager.fileExists(atPath: write.url.path) {
+                _ = try manager.replaceItemAt(
+                    write.url,
+                    withItemAt: temporaryURL
+                )
+            } else {
+                try manager.moveItem(at: temporaryURL, to: write.url)
+            }
+        }
+    }
+
+    private static func restore(_ backup: Backup, manager: FileManager) {
+        try? manager.removeItem(at: backup.url)
+        guard let backupURL = backup.backupURL else { return }
+        try? streamCopy(
+            from: backupURL,
+            to: backup.url,
+            manager: manager
+        )
+    }
+
+    private static func streamCopy(
+        from sourceURL: URL,
+        to destinationURL: URL,
+        manager: FileManager
+    ) throws {
+        guard !manager.fileExists(atPath: destinationURL.path),
+              manager.createFile(
+                  atPath: destinationURL.path,
+                  contents: nil
+              ) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+
+        let source = try FileHandle(forReadingFrom: sourceURL)
+        let destination = try FileHandle(forWritingTo: destinationURL)
+        defer {
+            try? source.close()
+            try? destination.close()
+        }
+
+        let bufferSize = 1024 * 1024
+        while let data = try source.read(upToCount: bufferSize), !data.isEmpty {
+            try destination.write(contentsOf: data)
+        }
+        try destination.synchronize()
     }
 }

@@ -131,7 +131,12 @@ struct NoteContentView: View {
                         authenticationButton
                     }
                 )
-                .modifier(PlatformSidebarNavigationChromeModifier())
+                .modifier(
+                    PlatformSidebarNavigationChromeModifier(
+                        showsReturnToDetail: workspace.document.cards.isEmpty,
+                        returnToDetail: returnToDetail
+                    )
+                )
                 .navigationSplitViewColumnWidth(
                     min: 300,
                     ideal: 300,
@@ -139,7 +144,12 @@ struct NoteContentView: View {
                 )
         } else {
             cardList
-                .modifier(PlatformSidebarNavigationChromeModifier())
+                .modifier(
+                    PlatformSidebarNavigationChromeModifier(
+                        showsReturnToDetail: workspace.document.cards.isEmpty,
+                        returnToDetail: returnToDetail
+                    )
+                )
                 .navigationSplitViewColumnWidth(
                     min: 180,
                     ideal: 240,
@@ -380,7 +390,7 @@ struct NoteContentView: View {
                     workspace.requestOpen()
                 }
 
-                Button("保存", systemImage: "square.and.arrow.up") {
+                Button("保存…", systemImage: "square.and.arrow.up") {
                     workspace.requestSave()
                 }
 
@@ -460,6 +470,13 @@ struct NoteContentView: View {
     private func hideSidebar() {
         guard splitViewVisibility != .detailOnly else { return }
         withAnimation {
+            splitViewVisibility = .detailOnly
+        }
+    }
+
+    private func returnToDetail() {
+        withAnimation {
+            preferredCompactColumn = .detail
             splitViewVisibility = .detailOnly
         }
     }

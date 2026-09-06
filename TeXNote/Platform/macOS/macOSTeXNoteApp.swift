@@ -71,7 +71,7 @@ struct macOSTeXNoteApp: App {
             }
 
             CommandGroup(replacing: .saveItem) {
-                Button("保存") {
+                Button("保存…") {
                     workspace.requestSave()
                 }
                 .keyboardShortcut("s", modifiers: .command)
