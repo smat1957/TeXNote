@@ -202,6 +202,7 @@ final class TeXEditorContainerView: UIView {
         clipsToBounds = true
         addSubview(lineNumberView)
         addSubview(textView)
+        lineNumberView.isHidden = true
         lineNumberView.isUserInteractionEnabled = false
         lineNumberView.backgroundColor = .clear
     }
@@ -252,51 +253,44 @@ private final class TeXLineNumberView: UIView {
 
     override func draw(_ rect: CGRect) {
         super.draw(rect)
-        guard let textView else { return }
+        guard !isHidden, bounds.width > 0, let textView else { return }
 
-        let layoutManager = textView.layoutManager
-        let textContainer = textView.textContainer
-        layoutManager.ensureLayout(for: textContainer)
         let string = textView.text as NSString
-        let visibleTextContainerRect = textView.bounds.offsetBy(
-            dx: -textView.textContainerInset.left,
-            dy: -textView.textContainerInset.top
-        )
-        let visibleGlyphRange = layoutManager.glyphRange(
-            forBoundingRect: visibleTextContainerRect,
-            in: textContainer
-        )
-        var glyphIndex = visibleGlyphRange.location
         let attributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
             .foregroundColor: UIColor.secondaryLabel
         ]
 
-        while glyphIndex < NSMaxRange(visibleGlyphRange) {
-            let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-            let isLogicalLineStart = characterIndex == 0
-                || string.character(at: characterIndex - 1) == 10
-            let relativeLineNumber = string.substring(to: characterIndex)
-                .reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
-            var effectiveRange = NSRange()
-            let fragment = layoutManager.lineFragmentRect(
-                forGlyphAt: glyphIndex,
-                effectiveRange: &effectiveRange
-            )
-            if isLogicalLineStart {
-                let label = "\(firstLineNumber + relativeLineNumber - 1)" as NSString
+        var lineIndex = 0
+        var characterOffset = 0
+        while characterOffset <= string.length {
+            guard let position = textView.position(
+                from: textView.beginningOfDocument,
+                offset: characterOffset
+            ) else { break }
+            let caretRect = textView.caretRect(for: position)
+            let caretInGutter = textView.convert(caretRect, to: self)
+            if caretInGutter.maxY >= bounds.minY {
+                if caretInGutter.minY > bounds.maxY { break }
+                let label = "\(firstLineNumber + lineIndex)" as NSString
                 let size = label.size(withAttributes: attributes)
                 label.draw(
                     at: CGPoint(
                         x: bounds.width - size.width - 7,
-                        y: fragment.minY
-                            + textView.textContainerInset.top
-                            - textView.contentOffset.y
+                        y: caretInGutter.minY
                     ),
                     withAttributes: attributes
                 )
             }
-            glyphIndex = max(NSMaxRange(effectiveRange), glyphIndex + 1)
+
+            let searchRange = NSRange(
+                location: characterOffset,
+                length: string.length - characterOffset
+            )
+            let newlineRange = string.range(of: "\n", range: searchRange)
+            if newlineRange.location == NSNotFound { break }
+            characterOffset = NSMaxRange(newlineRange)
+            lineIndex += 1
         }
     }
 }
