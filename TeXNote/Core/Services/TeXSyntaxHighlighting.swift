@@ -67,6 +67,77 @@ enum TeXSyntaxHighlighting {
         return spans
     }
 
+    static func searchRanges(
+        in text: String,
+        query: String,
+        caseSensitive: Bool = false
+    ) -> [NSRange] {
+        guard !query.isEmpty else { return [] }
+        let needle = query
+        var options: NSString.CompareOptions = [.diacriticInsensitive]
+        if !caseSensitive {
+            options.insert(.caseInsensitive)
+        }
+
+        let source = text as NSString
+        var ranges: [NSRange] = []
+        var searchRange = NSRange(location: 0, length: source.length)
+        while searchRange.length > 0 {
+            let match = source.range(
+                of: needle,
+                options: options,
+                range: searchRange
+            )
+            guard match.location != NSNotFound else { break }
+            ranges.append(match)
+            let nextLocation = NSMaxRange(match)
+            searchRange = NSRange(
+                location: nextLocation,
+                length: source.length - nextLocation
+            )
+        }
+        return ranges
+    }
+
+    static func nextSearchRange(
+        in text: String,
+        query: String,
+        caseSensitive: Bool,
+        after selection: NSRange
+    ) -> NSRange? {
+        let ranges = searchRanges(
+            in: text,
+            query: query,
+            caseSensitive: caseSensitive
+        )
+        guard !ranges.isEmpty else { return nil }
+        let nextLocation = NSMaxRange(selection)
+        return ranges.first { $0.location >= nextLocation } ?? ranges.first
+    }
+
+    static func selectionRange(
+        forDisplayedLine lineNumber: Int,
+        in text: String,
+        firstLineNumber: Int
+    ) -> NSRange? {
+        guard lineNumber >= firstLineNumber else { return nil }
+        let targetIndex = lineNumber - firstLineNumber
+        let units = Array(text.utf16)
+        var currentIndex = 0
+        var location = 0
+        if targetIndex == 0 {
+            return NSRange(location: 0, length: 0)
+        }
+        for (index, unit) in units.enumerated() where unit == 10 {
+            currentIndex += 1
+            location = index + 1
+            if currentIndex == targetIndex {
+                return NSRange(location: location, length: 0)
+            }
+        }
+        return nil
+    }
+
     static func completions(
         in text: String,
         cursorUTF16Offset: Int

@@ -1,0 +1,7 @@
+mat@MacBook-Pro ~ % curl -sS -X POST http://192.168.3.21/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "email":"test@example.com",
+    "password":"test-password"
+  }'
+{"access_token":"<redacted>","token_type":"bearer"}% mat@MacBook-Pro ~ %

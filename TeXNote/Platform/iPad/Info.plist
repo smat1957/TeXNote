@@ -28,7 +28,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Raspberry Piの版組サーバーへ接続するために使用します。</string>
+	<string>Raspberry PiのP0公開サーバーへ接続し、TeX文書を版組するために使用します。</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations~ipad</key>

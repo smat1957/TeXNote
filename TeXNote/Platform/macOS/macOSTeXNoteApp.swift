@@ -6,10 +6,15 @@ struct macOSTeXNoteApp: App {
     @NSApplicationDelegateAdaptor(macOSApplicationDelegate.self)
     private var applicationDelegate
     @StateObject private var workspace = NoteWorkspace()
+    @StateObject private var authenticationSession =
+        RemoteAuthenticationSession()
 
     var body: some Scene {
-        WindowGroup {
-            NoteContentView(workspace: workspace)
+        Window("TeXNote", id: "main") {
+            macOSMainContentView(
+                workspace: workspace,
+                authenticationSession: authenticationSession
+            )
                 .frame(minWidth: 900, minHeight: 600)
                 .background {
                     macOSMainWindowReader { window in
@@ -20,9 +25,18 @@ struct macOSTeXNoteApp: App {
                     applicationDelegate.configure(workspace: workspace)
                 }
         }
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(replacing: .appInfo) {
                 macOSAboutMenuCommand()
+            }
+
+            CommandGroup(replacing: .systemServices) {
+                EmptyView()
+            }
+
+            CommandGroup(replacing: .appVisibility) {
+                EmptyView()
             }
 
             CommandGroup(replacing: .newItem) {
@@ -66,17 +80,44 @@ struct macOSTeXNoteApp: App {
                     workspace.requestSaveAs()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("TeX文書のインポート…") {
+                    workspace.requestTeXDocumentImport(insertingAfter: nil)
+                }
             }
         }
 
         Settings {
-            macOSSettingsView()
+            macOSSettingsView(authenticationSession: authenticationSession)
         }
 
         Window("TeXNoteについて", id: "about") {
             TeXNoteAboutView()
         }
         .windowResizability(.contentSize)
+    }
+}
+
+private struct macOSMainContentView: View {
+    @Environment(\.openSettings) private var openSettings
+    @ObservedObject var workspace: NoteWorkspace
+    @ObservedObject var authenticationSession: RemoteAuthenticationSession
+    @AppStorage(TeXCompilerFactory.typesettingModeDefaultsKey)
+    private var typesettingMode = macOSTypesettingMode.local.rawValue
+
+    var body: some View {
+        NoteContentView(
+            workspace: workspace,
+            authenticationSession: authenticationSession,
+            settingsAction: {
+                openSettings()
+            },
+            showsAuthenticationInSidebar:
+                typesettingMode == macOSTypesettingMode.remote.rawValue,
+            extendsDetailIntoTopSafeArea: true
+        )
     }
 }
 

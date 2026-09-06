@@ -59,7 +59,8 @@ private struct macOSPDFZoomControlsModifier: ViewModifier {
 }
 
 extension View {
-    func macOSPDFZoomControls(
+    func platformPDFInteractions<ZoomGesture: Gesture>(
+        zoomGesture: ZoomGesture,
         magnify: @escaping (CGFloat) -> Void,
         zoomPercentage: Int,
         canZoomOut: Bool,

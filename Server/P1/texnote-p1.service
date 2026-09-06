@@ -1,0 +1,21 @@
+[Unit]
+Description=TeXNote P1 authentication server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=texnote-p1
+Group=texnote-p1
+WorkingDirectory=/opt/texnote/P1
+EnvironmentFile=/etc/texnote/p1.env
+ExecStart=/opt/texnote/P1/.venv/bin/uvicorn main:app --host 192.168.30.10 --port 8000
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/texnote/P1
+
+[Install]
+WantedBy=multi-user.target

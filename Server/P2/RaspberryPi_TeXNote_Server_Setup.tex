@@ -1,0 +1,1428 @@
+\documentclass[uplatex,a4paper,11pt]{jsarticle}
+\usepackage[margin=22mm]{geometry}
+\usepackage[dvipdfmx]{hyperref,xcolor}
+\usepackage{fvextra,enumitem,longtable,booktabs,amssymb}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!65!black,
+pdftitle={Raspberry Pi TeXNote版組サーバー構築手順}}
+\definecolor{commandbg}{RGB}{244,246,248}
+\DefineVerbatimEnvironment{command}{Verbatim}{fontsize=\small,frame=single,
+rulecolor=\color{gray!55},breaklines=true,breakanywhere=true}
+\setlist{nosep}
+\title{Raspberry Pi TeXNote版組サーバー構築手順\\
+\large 状態確認からpdfLaTeX/CJK用Type 1フォント導入まで}
+\author{}\date{2026年8月15日}
+\usepackage{comment}
+\usepackage{listings, jlisting}
+\lstset{
+	%プログラム言語(複数の言語に対応，C,C++も可)
+	language = Python,
+	%背景色と透過度
+	backgroundcolor={\color[gray]{.90}},
+	%枠外に行った時の自動改行
+	breaklines = true,
+	%自動改行後のインデント量(デフォルトでは20[pt])
+	breakindent = 10pt,
+	%標準の書体
+	basicstyle = \ttfamily\scriptsize,
+	%コメントの書体
+	commentstyle = {\itshape \color[cmyk]{1,0.4,1,0}},
+	%関数名等の色の設定
+	classoffset = 0,
+	%キーワード(int, ifなど)の書体
+	keywordstyle = {\bfseries \color[cmyk]{0,1,0,0}},
+	%表示する文字の書体
+	stringstyle = {\ttfamily \color[rgb]{0,0,1}},
+	%枠 "t"は上に線を記載, "T"は上に二重線を記載
+	%他オプション：leftline，topline，bottomline，lines，single，shadowbox
+	frame = TBrl,
+	%frameまでの間隔(行番号とプログラムの間)
+	framesep = 5pt,
+	%行番号の位置
+	numbers = left,
+	%行番号の間隔
+	stepnumber = 1,
+	%行番号の書体
+	numberstyle = \tiny,
+	%タブの大きさ
+	tabsize = 4,
+	%キャプションの場所("tb"ならば上下両方に記載)
+	captionpos = t
+}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+iPad版・iPhone版TeXNoteから、同一LAN上のRaspberry PiへTeX文書を送り、
+PDFを生成するサーバーを再構築するための手順書である。
+Debian 12、TeX Live、FastAPI/Uvicorn、APIトークン、systemdによる自動起動、
+およびpdfLaTeX/CJKで必要になるType 1フォント一式までを扱う。
+\end{abstract}
+\tableofcontents
+\newpage
+
+\section{完成時の構成}
+
+実際に構築した環境は次のとおりである。再構築時に異なる値は読み替える。
+\begin{longtable}{@{}ll@{}}
+\toprule 項目 & 値\\ \midrule
+機種 & Raspberry Pi 5 Model B Rev 1.0\\
+OS & Debian GNU/Linux 12 (bookworm)\\
+CPU・メモリ & aarch64・約8\,GiB\\
+ストレージ & 約29\,GB\\
+ホスト名・ユーザー & raspberrypi・mat\\
+LAN内IPアドレス & 192.168.3.11\\
+サーバーディレクトリ & /home/mat/texnote-server\\
+待受ポート & TCP 8000\\
+TeXエンジン & LuaLaTeX、XeLaTeX、pdfLaTeX、upLaTeX、pLaTeX\\
+\bottomrule
+\end{longtable}
+コマンドは「Raspberry Pi」または「Mac」と明記した側で実行する。
+
+%command1.sh
+
+\section{Raspberry Piの状態確認}
+Macから接続する。
+\begin{command}
+ssh mat@192.168.3.11
+\end{command}
+Raspberry Pi上で状態を確認する。
+\begin{command}
+cat /etc/os-release
+uname -m
+df -h hostname -I
+tr -d '\0' </proc/device-tree/model
+echo
+free -h
+hostnamectl
+timedatectl
+sudo apt update
+apt list --upgradable
+test -f /var/run/reboot-required \
+  && cat /var/run/reboot-required \
+  || echo "再起動は要求されていません"
+\end{command}
+
+\begin{comment}
+command1.sh の結果例
+
+\begin{verbatim}
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+aarch64
+df: invalid option -- 'I'
+Try 'df --help' for more information.
+Raspberry Pi 5 Model B Rev 1.0
+               total        used        free      shared  buff/cache   available
+Mem:           7.9Gi       563Mi       6.7Gi        58Mi       731Mi       7.3Gi
+Swap:          199Mi          0B       199Mi
+ Static hostname: raspberrypi
+       Icon name: computer
+      Machine ID: 34fa9c445800446dadcbd0259e955b64
+         Boot ID: f1423dad035949168771f530b7bac316
+Operating System: Debian GNU/Linux 12 (bookworm)
+          Kernel: Linux 6.12.96+rpt-rpi-2712
+    Architecture: arm64
+               Local time: Fri 2026-08-14 22:43:00 JST
+           Universal time: Fri 2026-08-14 13:43:00 UTC
+                 RTC time: Fri 2026-08-14 13:43:00
+                Time zone: Asia/Tokyo (JST, +0900)
+System clock synchronized: yes
+              NTP service: active
+          RTC in local TZ: no
+Hit:1 http://deb.debian.org/debian bookworm InRelease
+Hit:2 http://deb.debian.org/debian-security bookworm-security InRelease
+Hit:3 http://deb.debian.org/debian bookworm-updates InRelease
+Hit:4 http://archive.raspberrypi.com/debian bookworm InRelease
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+All packages are up to date.
+Listing... Done
+再起動は要求されていません
+\end{verbatim}
+\end{comment}
+
+画像ファイルがepsであった場合、gs（ghostscript）が必要になる
+\begin{command}
+sudo apt install ghostscript
+command -v gs
+gs --version
+\end{command}
+
+概ね次の様に出れば問題なくインストールできている
+\begin{verbatim}
+/usr/bin/gs
+10.00.0
+\end{verbatim}
+
+必要なら更新して再起動する。
+\begin{command}
+sudo apt full-upgrade
+sudo reboot
+\end{command}
+IPが変わるとアプリから接続できなくなるため、ルーターのDHCP予約を推奨する。
+
+\section{TeX Liveと日本語環境}
+
+まず導入をシミュレーションする。
+\begin{command}
+sudo apt-get --simulate install \
+  texlive \
+  texlive-latex-extra \
+  texlive-luatex \
+  texlive-xetex \
+  texlive-lang-japanese \
+  texlive-pictures \
+  texlive-science \
+  fonts-noto-cjk
+\end{command}
+大量の削除がないことを確認後、実際に導入する。
+\begin{command}
+sudo apt install \
+  texlive \
+  texlive-latex-extra \
+  texlive-luatex \
+  texlive-xetex \
+  texlive-lang-japanese \
+  texlive-pictures \
+  texlive-science \
+  fonts-noto-cjk
+\end{command}
+エンジンを確認する。
+
+%command2.sh
+
+\begin{command}
+command -v lualatex
+command -v xelatex
+command -v pdflatex
+command -v uplatex
+command -v platex
+command -v dvipdfmx
+command -v extractbb
+lualatex --version | head -n 1
+xelatex --version | head -n 1
+pdflatex --version | head -n 1
+uplatex --version | head -n 1
+platex --version | head -n 1
+dvipdfmx --version | head -n 1
+\end{command}
+
+\begin{comment}
+command2.sh 実行結果例
+
+\begin{verbatim}
+/usr/bin/lualatex
+/usr/bin/xelatex
+/usr/bin/pdflatex
+/usr/bin/uplatex
+/usr/bin/platex
+/usr/bin/dvipdfmx
+/usr/bin/extractbb
+This is LuaHBTeX, Version 1.15.0 (TeX Live 2022/Debian)
+XeTeX 3.141592653-2.6-0.999994 (TeX Live 2022/Debian)
+pdfTeX 3.141592653-2.6-1.40.24 (TeX Live 2022/Debian)
+e-upTeX 3.141592653-p4.0.0-u1.28-220214-2.6 (utf8.uptex) (TeX Live 2022/Debian)
+e-pTeX 3.141592653-p4.0.0-220214-2.6 (utf8.euc) (TeX Live 2022/Debian)
+This is dvipdfmx Version 20211117 by the DVIPDFMx project team,
+\end{verbatim}
+\end{comment}
+
+\section{5種類のエンジンを単体テスト}
+
+%command3.sh
+
+\begin{command}
+mkdir -p ~/tex-tests
+cd ~/tex-tests
+
+cat > lualatex-test.tex <<'EOF'
+\documentclass{ltjsarticle}
+\begin{document}
+LuaLaTeX日本語テスト。\quad $e^{i\pi}+1=0$
+\end{document}
+EOF
+lualatex -interaction=nonstopmode -halt-on-error lualatex-test.tex
+
+cat > xelatex-test.tex <<'EOF'
+\documentclass[xelatex,ja=standard]{bxjsarticle}
+\begin{document}
+XeLaTeX日本語テスト。\quad $e^{i\pi}+1=0$
+\end{document}
+EOF
+xelatex -interaction=nonstopmode -halt-on-error xelatex-test.tex
+
+cat > pdflatex-test.tex <<'EOF'
+\documentclass{article}
+\begin{document}
+pdfLaTeX test.\quad $e^{i\pi}+1=0$
+\end{document}
+EOF
+pdflatex -interaction=nonstopmode -halt-on-error pdflatex-test.tex
+
+cat > uplatex-test.tex <<'EOF'
+\documentclass[uplatex,dvipdfmx]{jsarticle}
+\begin{document}
+upLaTeX日本語テスト。\quad $e^{i\pi}+1=0$
+\end{document}
+EOF
+uplatex -interaction=nonstopmode -halt-on-error uplatex-test.tex
+dvipdfmx uplatex-test.dvi
+
+cat > platex-test.tex <<'EOF'
+\documentclass[dvipdfmx]{jsarticle}
+\begin{document}
+pLaTeX日本語テスト。\quad $e^{i\pi}+1=0$
+\end{document}
+EOF
+platex -interaction=nonstopmode -halt-on-error platex-test.tex
+dvipdfmx platex-test.dvi
+
+ls -lh *-test.pdf
+file *-test.pdf
+\end{command}
+pdfLaTeXはまず欧文と数式で確認し、CJK日本語用フォントは後節で導入する。
+
+\begin{comment}
+command3.sh 実行結果
+
+\begin{verbatim}
+This is LuaHBTeX, Version 1.15.0 (TeX Live 2022/Debian)
+ restricted system commands enabled.
+(./lualatex-test.tex
+LaTeX2e <2022-11-01> patch level 1
+ L3 programming layer <2023-01-16>
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/ltjsarticle.cls
+Document Class: ltjsarticle 2022/09/12 ltjsclasses
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/luatexja.sty
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/luatexja-core.sty
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexbase/luatexbase.sty
+(/usr/share/texlive/texmf-dist/tex/luatex/ctablestack/ctablestack.sty))
+(/usr/share/texlive/texmf-dist/tex/generic/ltxcmds/ltxcmds.sty)
+(/usr/share/texlive/texmf-dist/tex/generic/pdftexcmds/pdftexcmds.sty
+(/usr/share/texlive/texmf-dist/tex/generic/infwarerr/infwarerr.sty)
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/iftex.sty))
+(/usr/share/texlive/texmf-dist/tex/latex/xkeyval/xkeyval.sty
+(/usr/share/texlive/texmf-dist/tex/generic/xkeyval/xkeyval.tex
+(/usr/share/texlive/texmf-dist/tex/generic/xkeyval/xkvutils.tex
+(/usr/share/texlive/texmf-dist/tex/generic/xkeyval/keyval.tex))))
+(/usr/share/texlive/texmf-dist/tex/latex/etoolbox/etoolbox.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/everyhook/everyhook.sty
+(/usr/share/texlive/texmf-dist/tex/latex/svn-prov/svn-prov.sty))
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/ltj-base.sty)
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/ltj-kinsoku.tex)
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/ltj-latex.sty
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/patches/lltjfont.sty
+(/usr/share/texlive/texmf-dist/tex/latex/base/tuenc.def))
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/patches/lltjdefs.sty
+luaotfload | db : Font names database not found, generating new one.
+luaotfload | db : This can take several minutes; please be patient.
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/jfm-ujisv.lua)
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/jfm-ujis.lua))
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/patches/lltjcore.sty
+(/usr/share/texlive/texmf-dist/tex/latex/l3kernel/expl3.sty
+(/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-luatex.def)))
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/patches/lltjp-atbegshi.sty)
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/patches/lltjp-geometry.sty
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/ifluatex.sty))))
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/luatexja-compat.sty))
+(/usr/share/texlive/texmf-dist/tex/platex/jsclasses/jslogo.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/sttools/stfloats.sty)
+(/usr/share/texlive/texmf-dist/tex/luatex/luatexja/patches/lltjp-stfloats.sty))
+
+No file lualatex-test.aux.
+(/usr/share/texlive/texmf-dist/tex/latex/base/ts1cmr.fd) [1{/var/lib/texmf/font
+s/map/pdftex/updmap/pdftex.map}] (./lualatex-test.aux))
+ 792 words of node memory still in use:
+   7 hlist, 1 vlist, 4 rule, 2 glue, 3 kern, 1 glyph, 129 attribute, 49 glue_sp
+ec, 20 attribute_list, 1 write, 9 user_defined nodes
+   avail lists: 1:7,2:952,3:12,4:17,5:24,6:3,7:106,8:7,9:34,11:4
+</usr/share/texlive/texmf-dist/fonts/opentype/public/haranoaji/HaranoAjiMincho-
+Regular.otf></usr/share/texmf/fonts/opentype/public/lm/lmroman10-regular.otf></
+usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/sh
+are/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi7.pfb></usr/share/tex
+live/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb>
+Output written on lualatex-test.pdf (1 page, 28651 bytes).
+Transcript written on lualatex-test.log.
+This is XeTeX, Version 3.141592653-2.6-0.999994 (TeX Live 2022/Debian) (preloaded format=xelatex)
+ restricted \write18 enabled.
+entering extended mode
+(./xelatex-test.tex
+LaTeX2e <2022-11-01> patch level 1
+L3 programming layer <2023-01-16>
+(/usr/share/texlive/texmf-dist/tex/latex/bxjscls/bxjsarticle.cls
+Document Class: bxjsarticle 2022/04/10 v2.7a BXJS document classes
+(/usr/share/texlive/texmf-dist/tex/latex/tools/calc.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/graphics/keyval.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/bxjscls/bxjscompat.sty)
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/ifpdf.sty
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/iftex.sty))
+(/usr/share/texlive/texmf-dist/tex/latex/geometry/geometry.sty
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/ifvtex.sty))
+(/usr/share/texlive/texmf-dist/tex/latex/bxwareki/bxwareki.sty
+(/usr/share/texlive/texmf-dist/tex/latex/bxwareki/bxwareki-cd.def))
+(/usr/share/texlive/texmf-dist/tex/latex/bxjscls/bxjsja-standard.def
+(/usr/share/texlive/texmf-dist/tex/latex/bxjscls/bxjsja-minimal.def)
+(/usr/share/texlive/texmf-dist/tex/latex/zxjatype/zxjatype.sty
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/ifxetex.sty)
+(/usr/share/texlive/texmf-dist/tex/xelatex/xecjk/xeCJK.sty
+(/usr/share/texlive/texmf-dist/tex/latex/l3kernel/expl3.sty
+(/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-xetex.def))
+(/usr/share/texlive/texmf-dist/tex/latex/ctex/ctexhook.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/l3packages/xtemplate/xtemplate.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/fontspec/fontspec.sty
+(/usr/share/texlive/texmf-dist/tex/latex/l3packages/xparse/xparse.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/fontspec/fontspec-xetex.sty
+(/usr/share/texlive/texmf-dist/tex/latex/base/fontenc.sty)
+(/usr/share/texlive/texmf-dist/tex/latex/fontspec/fontspec.cfg)))
+(/usr/share/texlive/texmf-dist/tex/xelatex/xecjk/xeCJK.cfg)))))
+No file xelatex-test.aux.
+(/usr/share/texlive/texmf-dist/tex/latex/base/ts1cmr.fd)
+*geometry* driver: auto-detecting
+*geometry* detected driver: xetex
+[1] (./xelatex-test.aux) )
+Output written on xelatex-test.pdf (1 page).
+Transcript written on xelatex-test.log.
+This is pdfTeX, Version 3.141592653-2.6-1.40.24 (TeX Live 2022/Debian) (preloaded format=pdflatex)
+ restricted \write18 enabled.
+entering extended mode
+(./pdflatex-test.tex
+LaTeX2e <2022-11-01> patch level 1
+L3 programming layer <2023-01-16>
+(/usr/share/texlive/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2022/07/02 v1.4n Standard LaTeX document class
+(/usr/share/texlive/texmf-dist/tex/latex/base/size10.clo))
+(/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def)
+No file pdflatex-test.aux.
+[1{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}] (./pdflatex-test.aux) )<
+/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/s
+hare/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi7.pfb></usr/share/te
+xlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb>
+Output written on pdflatex-test.pdf (1 page, 30138 bytes).
+Transcript written on pdflatex-test.log.
+This is e-upTeX, Version 3.141592653-p4.0.0-u1.28-220214-2.6 (utf8.uptex) (TeX Live 2022/Debian) (preloaded format=uplatex)
+ restricted \write18 enabled.
+entering extended mode
+(./uplatex-test.tex
+pLaTeX2e <2021-11-15u04>+1 (based on LaTeX2e <2022-11-01> patch level 1)
+L3 programming layer <2023-01-16>
+(/usr/share/texlive/texmf-dist/tex/platex/jsclasses/jsarticle.cls
+Document Class: jsarticle 2022/09/13 jsclasses (okumura, texjporg)
+(/usr/share/texlive/texmf-dist/tex/platex/jsclasses/jslogo.sty))
+(/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-dvipdfmx.def)
+No file uplatex-test.aux.
+[1] (./uplatex-test.aux) )
+Output written on uplatex-test.dvi (1 page, 420 bytes).
+Transcript written on uplatex-test.log.
+uplatex-test.dvi -> uplatex-test.pdf
+[1]
+5268 bytes written
+This is e-pTeX, Version 3.141592653-p4.0.0-220214-2.6 (utf8.euc) (TeX Live 2022/Debian) (preloaded format=platex)
+ restricted \write18 enabled.
+entering extended mode
+(./platex-test.tex
+pLaTeX2e <2021-11-15>+1 (based on LaTeX2e <2022-11-01> patch level 1)
+L3 programming layer <2023-01-16>
+(/usr/share/texlive/texmf-dist/tex/platex/jsclasses/jsarticle.cls
+Document Class: jsarticle 2022/09/13 jsclasses (okumura, texjporg)
+(/usr/share/texlive/texmf-dist/tex/platex/jsclasses/jslogo.sty))
+(/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-dvipdfmx.def)
+No file platex-test.aux.
+[1] (./platex-test.aux) )
+Output written on platex-test.dvi (1 page, 408 bytes).
+Transcript written on platex-test.log.
+platex-test.dvi -> platex-test.pdf
+[1]
+5168 bytes written
+-rw-r--r-- 1 mat mat  28K Aug 14 22:56 lualatex-test.pdf
+-rw-r--r-- 1 mat mat  30K Aug 14 22:56 pdflatex-test.pdf
+-rw-r--r-- 1 mat mat 5.1K Aug 14 22:56 platex-test.pdf
+-rw-r--r-- 1 mat mat 5.2K Aug 14 22:56 uplatex-test.pdf
+-rw-r--r-- 1 mat mat 8.4K Aug 14 22:56 xelatex-test.pdf
+lualatex-test.pdf: PDF document, version 1.5
+pdflatex-test.pdf: PDF document, version 1.5
+platex-test.pdf:   PDF document, version 1.5 (zip deflate encoded)
+uplatex-test.pdf:  PDF document, version 1.5 (zip deflate encoded)
+xelatex-test.pdf:  PDF document, version 1.5 (zip deflate encoded)
+\end{verbatim}
+\end{comment}
+
+\section{Python版組API}
+
+\subsection{仮想環境}
+
+Raspberry Pi上で実行する。
+
+%command4.sh
+
+\begin{command}
+sudo apt install python3-venv python3-pip openssl
+mkdir -p /home/mat/texnote-server
+cd /home/mat/texnote-server
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install 'fastapi==0.141.1' 'uvicorn[standard]==0.52.1'
+python --version
+python -m pip show fastapi | grep Version
+python -m pip show uvicorn | grep Version
+which python
+which uvicorn
+deactivate
+\end{command}
+
+\begin{comment}
+command4.sh の実行結果
+
+\begin{verbatim}
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+python3-venv is already the newest version (3.11.2-1+b1).
+python3-pip is already the newest version (23.0.1+dfsg-1+rpt1).
+openssl is already the newest version (3.0.20-1~deb12u2+rpt1).
+The following packages were automatically installed and are no longer required:
+  avahi-utils gir1.2-handy-1 gir1.2-packagekitglib-1.0 gir1.2-polkit-1.0
+  libbasicusageenvironment1 libc++1-16 libc++abi1-16 libcamera0.4
+  libgroupsock8 liblivemedia77 libunwind-16
+  linux-headers-6.6.62+rpt-common-rpi linux-headers-6.6.62+rpt-rpi-2712
+  linux-headers-6.6.62+rpt-rpi-v8 linux-headers-6.6.74+rpt-common-rpi
+  linux-headers-6.6.74+rpt-rpi-2712 linux-headers-6.6.74+rpt-rpi-v8
+  linux-image-6.6.62+rpt-rpi-2712 linux-image-6.6.62+rpt-rpi-v8
+  linux-image-6.6.74+rpt-rpi-2712 linux-image-6.6.74+rpt-rpi-v8
+  linux-kbuild-6.6.62+rpt linux-kbuild-6.6.74+rpt python3-v4l2
+Use 'sudo apt autoremove' to remove them.
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+command4.sh: 5: source: not found
+error: externally-managed-environment
+
+× This environment is externally managed
+╰─> To install Python packages system-wide, try apt install
+    python3-xyz, where xyz is the package you are trying to
+    install.
+
+    If you wish to install a non-Debian-packaged Python package,
+    create a virtual environment using python3 -m venv path/to/venv.
+    Then use path/to/venv/bin/python and path/to/venv/bin/pip. Make
+    sure you have python3-full installed.
+
+    For more information visit http://rptl.io/venv
+
+note: If you believe this is a mistake, please contact your Python installation or OS distribution provider. You can override this, at the risk of breaking your Python installation or OS, by passing --break-system-packages.
+hint: See PEP 668 for the detailed specification.
+error: externally-managed-environment
+
+× This environment is externally managed
+╰─> To install Python packages system-wide, try apt install
+    python3-xyz, where xyz is the package you are trying to
+    install.
+
+    If you wish to install a non-Debian-packaged Python package,
+    create a virtual environment using python3 -m venv path/to/venv.
+    Then use path/to/venv/bin/python and path/to/venv/bin/pip. Make
+    sure you have python3-full installed.
+
+    For more information visit http://rptl.io/venv
+
+note: If you believe this is a mistake, please contact your Python installation or OS distribution provider. You can override this, at the risk of breaking your Python installation or OS, by passing --break-system-packages.
+hint: See PEP 668 for the detailed specification.
+Python 3.11.2
+WARNING: Package(s) not found: fastapi
+WARNING: Package(s) not found: uvicorn
+/usr/bin/python
+command4.sh: 13: deactivate: not found
+mat@raspberrypi:~ $ source .venv/bin/activate
+-bash: .venv/bin/activate: No such file or directory
+mat@raspberrypi:~ $ ls ./.venv
+ls: cannot access './.venv': No such file or directory
+mat@raspberrypi:~ $ cd texnote-server/
+mat@raspberrypi:~/texnote-server $ ls
+mat@raspberrypi:~/texnote-server $ ls ./.venv
+bin  include  lib  lib64  pyvenv.cfg
+mat@raspberrypi:~/texnote-server $ source .venv/bin/activate
+(.venv) mat@raspberrypi:~/texnote-server $ python -m pip install --upgrade pip
+Looking in indexes: https://pypi.org/simple, https://www.piwheels.org/simple
+Requirement already satisfied: pip in ./.venv/lib/python3.11/site-packages (23.0.1)
+Collecting pip
+  Obtaining dependency information for pip from https://www.piwheels.org/simple/pip/pip-26.2.1-py3-none-any.whl.metadata
+  Downloading https://www.piwheels.org/simple/pip/pip-26.2.1-py3-none-any.whl.metadata (4.6 kB)
+Downloading https://www.piwheels.org/simple/pip/pip-26.2.1-py3-none-any.whl (1.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 736.2 kB/s eta 0:00:00
+Using cached https://www.piwheels.org/simple/pip/pip-26.2.1-py3-none-any.whl (1.8 MB)
+Installing collected packages: pip
+  Attempting uninstall: pip
+    Found existing installation: pip 23.0.1
+    Uninstalling pip-23.0.1:
+      Successfully uninstalled pip-23.0.1
+Successfully installed pip-26.2.1
+(.venv) mat@raspberrypi:~/texnote-server $ python -m pip install 'fastapi==0.141.1' 'uvicorn[standard]==0.52.1'
+Looking in indexes: https://pypi.org/simple, https://www.piwheels.org/simple
+Collecting fastapi==0.141.1
+  Downloading fastapi-0.141.1-py3-none-any.whl.metadata (27 kB)
+Collecting uvicorn==0.52.1 (from uvicorn[standard]==0.52.1)
+  Downloading uvicorn-0.52.1-py3-none-any.whl.metadata (6.6 kB)
+Collecting starlette>=0.46.0 (from fastapi==0.141.1)
+  Downloading starlette-1.6.0-py3-none-any.whl.metadata (6.4 kB)
+Collecting pydantic>=2.9.0 (from fastapi==0.141.1)
+  Downloading pydantic-2.13.4-py3-none-any.whl.metadata (109 kB)
+Collecting typing-extensions>=4.8.0 (from fastapi==0.141.1)
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting typing-inspection>=0.4.2 (from fastapi==0.141.1)
+  Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+Collecting annotated-doc>=0.0.2 (from fastapi==0.141.1)
+  Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+Collecting click>=7.0 (from uvicorn==0.52.1->uvicorn[standard]==0.52.1)
+  Downloading click-8.4.2-py3-none-any.whl.metadata (2.6 kB)
+Collecting h11>=0.8 (from uvicorn==0.52.1->uvicorn[standard]==0.52.1)
+  Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Collecting httptools>=0.8.0 (from uvicorn[standard]==0.52.1)
+  Downloading httptools-0.8.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (3.5 kB)
+Collecting python-dotenv>=0.13 (from uvicorn[standard]==0.52.1)
+  Downloading python_dotenv-1.2.2-py3-none-any.whl.metadata (27 kB)
+Collecting pyyaml>=5.1 (from uvicorn[standard]==0.52.1)
+  Downloading pyyaml-6.0.3-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (2.4 kB)
+Collecting uvloop>=0.15.1 (from uvicorn[standard]==0.52.1)
+  Downloading uvloop-0.22.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (4.9 kB)
+Collecting watchfiles>=0.20 (from uvicorn[standard]==0.52.1)
+  Downloading watchfiles-1.2.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl.metadata (4.9 kB)
+Collecting websockets>=13.0 (from uvicorn[standard]==0.52.1)
+  Downloading websockets-17.0.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (6.3 kB)
+Collecting annotated-types>=0.6.0 (from pydantic>=2.9.0->fastapi==0.141.1)
+  Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+Collecting pydantic-core==2.46.4 (from pydantic>=2.9.0->fastapi==0.141.1)
+  Downloading pydantic_core-2.46.4-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl.metadata (6.6 kB)
+Collecting anyio<5,>=3.6.2 (from starlette>=0.46.0->fastapi==0.141.1)
+  Downloading anyio-4.14.2-py3-none-any.whl.metadata (4.6 kB)
+Collecting idna>=2.8 (from anyio<5,>=3.6.2->starlette>=0.46.0->fastapi==0.141.1)
+  Downloading idna-3.18-py3-none-any.whl.metadata (6.1 kB)
+Downloading fastapi-0.141.1-py3-none-any.whl (131 kB)
+Downloading uvicorn-0.52.1-py3-none-any.whl (79 kB)
+Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+Downloading click-8.4.2-py3-none-any.whl (119 kB)
+Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Downloading httptools-0.8.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (464 kB)
+Downloading pydantic-2.13.4-py3-none-any.whl (472 kB)
+Downloading pydantic_core-2.46.4-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl (2.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 MB 3.8 MB/s  0:00:00
+Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+Downloading python_dotenv-1.2.2-py3-none-any.whl (22 kB)
+Downloading pyyaml-6.0.3-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (775 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 775.6/775.6 kB 4.0 MB/s  0:00:00
+Downloading starlette-1.6.0-py3-none-any.whl (75 kB)
+Downloading anyio-4.14.2-py3-none-any.whl (124 kB)
+Downloading idna-3.18-py3-none-any.whl (65 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+Downloading uvloop-0.22.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (3.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.8/3.8 MB 3.8 MB/s  0:00:00
+Downloading watchfiles-1.2.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl (456 kB)
+Downloading websockets-17.0.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (221 kB)
+Installing collected packages: websockets, uvloop, typing-extensions, pyyaml, python-dotenv, idna, httptools, h11, click, annotated-types, annotated-doc, uvicorn, typing-inspection, pydantic-core, anyio, watchfiles, starlette, pydantic, fastapi
+Successfully installed annotated-doc-0.0.5 annotated-types-0.8.0 anyio-4.14.2 click-8.4.2 fastapi-0.141.1 h11-0.16.0 httptools-0.8.0 idna-3.18 pydantic-2.13.4 pydantic-core-2.46.4 python-dotenv-1.2.2 pyyaml-6.0.3 starlette-1.6.0 typing-extensions-4.16.0 typing-inspection-0.4.4 uvicorn-0.52.1 uvloop-0.22.1 watchfiles-1.2.0 websockets-17.0.1
+(.venv) mat@raspberrypi:~/texnote-server $ python --version
+Python 3.11.2
+(.venv) mat@raspberrypi:~/texnote-server $ python -m pip show fastapi | grep Version
+Version: 0.141.1
+(.venv) mat@raspberrypi:~/texnote-server $ python -m pip show uvicorn | grep Version
+Version: 0.52.1
+(.venv) mat@raspberrypi:~/texnote-server $ which python
+/home/mat/texnote-server/.venv/bin/python
+(.venv) mat@raspberrypi:~/texnote-server $ which uvicorn
+/home/mat/texnote-server/.venv/bin/uvicorn
+(.venv) mat@raspberrypi:~/texnote-server $ deactivate
+mat@raspberrypi:~/texnote-server $
+\end{verbatim}
+\end{comment}
+
+再現用\texttt{requirements.txt}は次の内容である。
+\begin{command}
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+\end{command}
+
+\subsection{Macからプログラムを転送}
+
+Mac側のリポジトリ位置が異なる場合はパスを変更する。
+\begin{command}
+scp \
+  /Users/mat/Documents/Git/TeXNote/Server/P2/progs/app.py \
+  /Users/mat/Documents/Git/TeXNote/Server/P2/progs/requirements.txt \
+  mat@192.168.3.11:/home/mat/texnote-server/
+\end{command}
+Raspberry Piで依存関係をそろえる。
+\begin{command}
+cd /home/mat/texnote-server
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+\end{command}
+
+\begin{comment}
+app.py と requirements.txt をコピー後
+
+\begin{verbatim}
+mat@raspberrypi:~/texnote-server $ ls
+app.py  requirements.txt
+mat@raspberrypi:~/texnote-server $ cat requirements.txt
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+mat@raspberrypi:~/texnote-server $ source .venv/bin/activate
+(.venv) mat@raspberrypi:~/texnote-server $ python -m pip install -r requirements.txt
+Looking in indexes: https://pypi.org/simple, https://www.piwheels.org/simple
+Requirement already satisfied: fastapi==0.141.1 in ./.venv/lib/python3.11/site-packages (from -r requirements.txt (line 1)) (0.141.1)
+Requirement already satisfied: uvicorn==0.52.1 in ./.venv/lib/python3.11/site-packages (from uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (0.52.1)
+Requirement already satisfied: starlette>=0.46.0 in ./.venv/lib/python3.11/site-packages (from fastapi==0.141.1->-r requirements.txt (line 1)) (1.6.0)
+Requirement already satisfied: pydantic>=2.9.0 in ./.venv/lib/python3.11/site-packages (from fastapi==0.141.1->-r requirements.txt (line 1)) (2.13.4)
+Requirement already satisfied: typing-extensions>=4.8.0 in ./.venv/lib/python3.11/site-packages (from fastapi==0.141.1->-r requirements.txt (line 1)) (4.16.0)
+Requirement already satisfied: typing-inspection>=0.4.2 in ./.venv/lib/python3.11/site-packages (from fastapi==0.141.1->-r requirements.txt (line 1)) (0.4.4)
+Requirement already satisfied: annotated-doc>=0.0.2 in ./.venv/lib/python3.11/site-packages (from fastapi==0.141.1->-r requirements.txt (line 1)) (0.0.5)
+Requirement already satisfied: click>=7.0 in ./.venv/lib/python3.11/site-packages (from uvicorn==0.52.1->uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (8.4.2)
+Requirement already satisfied: h11>=0.8 in ./.venv/lib/python3.11/site-packages (from uvicorn==0.52.1->uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (0.16.0)
+Requirement already satisfied: httptools>=0.8.0 in ./.venv/lib/python3.11/site-packages (from uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (0.8.0)
+Requirement already satisfied: python-dotenv>=0.13 in ./.venv/lib/python3.11/site-packages (from uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (1.2.2)
+Requirement already satisfied: pyyaml>=5.1 in ./.venv/lib/python3.11/site-packages (from uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (6.0.3)
+Requirement already satisfied: uvloop>=0.15.1 in ./.venv/lib/python3.11/site-packages (from uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (0.22.1)
+Requirement already satisfied: watchfiles>=0.20 in ./.venv/lib/python3.11/site-packages (from uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (1.2.0)
+Requirement already satisfied: websockets>=13.0 in ./.venv/lib/python3.11/site-packages (from uvicorn[standard]==0.52.1->-r requirements.txt (line 2)) (17.0.1)
+Requirement already satisfied: annotated-types>=0.6.0 in ./.venv/lib/python3.11/site-packages (from pydantic>=2.9.0->fastapi==0.141.1->-r requirements.txt (line 1)) (0.8.0)
+Requirement already satisfied: pydantic-core==2.46.4 in ./.venv/lib/python3.11/site-packages (from pydantic>=2.9.0->fastapi==0.141.1->-r requirements.txt (line 1)) (2.46.4)
+Requirement already satisfied: anyio<5,>=3.6.2 in ./.venv/lib/python3.11/site-packages (from starlette>=0.46.0->fastapi==0.141.1->-r requirements.txt (line 1)) (4.14.2)
+Requirement already satisfied: idna>=2.8 in ./.venv/lib/python3.11/site-packages (from anyio<5,>=3.6.2->starlette>=0.46.0->fastapi==0.141.1->-r requirements.txt (line 1)) (3.18)
+(.venv) mat@raspberrypi:~/texnote-server $ deactivate
+mat@raspberrypi:~/texnote-server $
+\end{verbatim}
+\end{comment}
+
+\section{APIトークン}
+
+Raspberry Pi上で作成する。トークンはGitへ登録しない。
+
+%command6.sh
+
+\begin{command}
+cd /home/mat/texnote-server
+umask 077
+openssl rand -hex 32 > .api-token
+chmod 600 .api-token
+printf 'TEXNOTE_API_TOKEN=' > server.env
+cat .api-token >> server.env
+chmod 600 server.env
+ls -l .api-token server.env
+\end{command}
+
+\begin{comment}
+\begin{verbatim}
+mat@raspberrypi:~ $ sh command6.sh
+-rw------- 1 mat mat 65 Aug 14 23:11 .api-token
+-rw------- 1 mat mat 83 Aug 14 23:11 server.env
+mat@raspberrypi:~ $
+\end{verbatim}
+\end{comment}
+
+\section{手動起動と疎通確認}
+
+Raspberry Piで起動する。
+
+\begin{command}
+cd /home/mat/texnote-server
+source .venv/bin/activate
+set -a
+source server.env
+set +a
+uvicorn app:app --host 192.168.3.11 --port 8000
+\end{command}
+
+Macの別ターミナルで確認する。
+\begin{command}
+curl --fail-with-body http://192.168.3.11:8000/health
+\end{command}
+期待される応答例：
+\begin{command}
+{"status":"ok","engines":["lualatex","xelatex","pdflatex","uplatex","platex"]}
+\end{command}
+認証も確認し、Mac上の一時変数を最後に消去する。
+\begin{command}
+TEXNOTE_TOKEN="$(ssh mat@192.168.3.11 \
+  'cat /home/mat/texnote-server/.api-token')"
+curl --fail-with-body \
+  http://192.168.3.11:8000/v1/auth-check \
+  -H "Authorization: Bearer $TEXNOTE_TOKEN"
+unset TEXNOTE_TOKEN
+\end{command}
+成功時は\texttt{\{"status":"ok"\}}が返る。手動サーバーはPi側でCtrl-Cを押して終了する。
+
+\section{APIリクエストと添付ファイルの制限}
+
+P2は過大な入力によるメモリ・CPU・一時領域の消費を抑えるため、現行の
+\texttt{app.py}で次の上限を設定している。
+
+\begin{longtable}{@{}p{58mm}p{38mm}p{54mm}@{}}
+\toprule
+対象 & 現行上限 & 超過時の扱い\\
+\midrule
+HTTPリクエスト全体 & 32 MiB & HTTP 413\\
+TeXソース & 2,000,000文字 & 入力検証エラー\\
+添付1ファイル & 10 MiB & HTTP 413\\
+添付ファイル合計 & 20 MiB & HTTP 413\\
+\texttt{pictures}の個数 & 50個 & 入力検証エラー\\
+\texttt{files}の個数 & 50個 & 入力検証エラー\\
+相対パス & 1,024文字 & 入力検証エラー\\
+P2ログ & 200,000文字 & 末尾を応答に使用\\
+\bottomrule
+\end{longtable}
+
+HTTPリクエスト全体の上限は次の定数で33,554,432 bytesに設定する。
+
+\begin{command}
+MAX_REQUEST_BYTES = 32 * 1024 * 1024
+\end{command}
+
+画像と添付ファイルはJSONへBase64文字列として格納される。Base64は元データのおよそ
+4/3倍になるため、復号後20 MiBの添付は約26.7 MiBになる。これにTeXソース、相対パス、
+JSON構造を加えても収まるよう、HTTP全体を32 MiBとしている。
+
+\texttt{Content-Length}が32 MiBを超える場合は、本文を解析する前にHTTP 413を返す。
+
+\begin{command}
+{"message":"リクエストの上限32 MiBを超えています。"}
+\end{command}
+
+P1にも同じ32 MiB制限を設定し、P1で受理された要求がP2の入口で容量超過にならないよう
+上限を統一する。公開時にリバースプロキシを置く場合も、そこで同じ上限を設定する。
+
+\section{systemdによる自動起動}
+
+Raspberry Pi上で作成する。
+\begin{command}
+sudo nano /etc/systemd/system/texnote-server.service
+\end{command}
+内容は次のとおり。\texttt{ExecStart}は1行で記述する。
+\begin{command}
+[Unit]
+Description=TeXNote Typesetting Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mat
+Group=mat
+WorkingDirectory=/home/mat/texnote-server
+EnvironmentFile=/home/mat/texnote-server/server.env
+ExecStart=/home/mat/texnote-server/.venv/bin/uvicorn app:app --host 192.168.3.11 --port 8000
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+\end{command}
+読み込み、自動起動を有効化する。
+\begin{command}
+sudo systemctl daemon-reload
+sudo systemctl enable --now texnote-server
+systemctl status texnote-server --no-pager
+systemctl is-enabled texnote-server
+systemctl is-active texnote-server
+journalctl -u texnote-server -n 100 --no-pager
+\end{command}
+再起動試験をする。
+\begin{command}
+sudo reboot
+\end{command}
+Piが戻った後、Macで確認する。
+\begin{command}
+ping -c 3 192.168.3.11
+curl --connect-timeout 5 http://192.168.3.11:8000/health
+ssh mat@192.168.3.11 \
+  'systemctl is-enabled texnote-server && systemctl is-active texnote-server'
+\end{command}
+
+\section{iPad版・iPhone版の設定}
+アプリへ次を登録する。
+\begin{itemize}
+\item サーバーURL：\texttt{http://192.168.3.11:8000}
+\item APIトークン：Piの\texttt{/home/mat/texnote-server/.api-token}の内容
+\end{itemize}
+現段階は同一Wi-Fi内だけで使用する。ルーターの8000番ポートをインターネットへ
+転送しない。外出先利用はTailscaleやWireGuard等のVPNを導入してから行う。
+
+\section{プログラムの更新}
+\subsection{systemd版の更新}
+
+アプリと版組サーバーのAPIを変更した場合は、両者の対応版を同時期に更新する。
+特に添付リソースのキーを\texttt{fileName}から\texttt{relativePath}へ変更した版では、
+新旧のアプリとサーバーを混在させると版組要求がHTTP 422で失敗する。
+
+まずMacから新しい\texttt{app.py}を一時名で転送する。
+\begin{command}
+scp \
+  /Users/mat/Documents/Git/TeXNote/Server/P2/progs/app.py \
+  mat@192.168.3.11:/home/mat/texnote-server/app.py.new
+\end{command}
+Pi上で現行版をバックアップし、差替え前にPython構文検査を行う。
+\begin{command}
+ssh mat@192.168.3.11
+cd /home/mat/texnote-server
+cp -p app.py app.py.backup
+.venv/bin/python -m py_compile app.py.new
+mv app.py.new app.py
+\end{command}
+サービスを再起動し、状態、ログ、HTTP応答を確認する。
+\begin{command}
+sudo systemctl restart texnote-server
+sudo systemctl status texnote-server --no-pager
+sudo journalctl -u texnote-server -n 100 --no-pager
+curl --fail-with-body http://192.168.3.11:8000/health
+\end{command}
+異常があればバックアップへ戻す。
+\begin{command}
+cd /home/mat/texnote-server
+cp -p app.py.backup app.py
+sudo systemctl restart texnote-server
+sudo systemctl status texnote-server --no-pager
+\end{command}
+サーバーの\texttt{/health}確認後に対応するiPad・iPhone版アプリを更新し、
+サブフォルダ内の画像または添付ファイルを含むCardで版組、保存、再読込を確認する。
+
+\section{画像・ファイル・独自スタイル}
+文書固有の\texttt{.sty}、画像、データはTeXNoteの「画像・ファイル」から送る。
+新しいAPIでは各リソースがノートルート基準の安全な相対パスを持ち、
+サーバー上の一時作業ディレクトリにもその階層が再現される。
+例えば\texttt{files/}以下のリソースは次のように参照する。
+\begin{command}
+\usepackage{files/my-style}
+\includegraphics{files/example.png}
+\input{files/part.tex}
+\end{command}
+全文書で共通利用するスタイルをPiのローカルTeXツリーへ置く例：
+\begin{command}
+mkdir -p ~/texmf/tex/latex/texnote
+cp my-style.sty ~/texmf/tex/latex/texnote/
+mktexlsr ~/texmf
+kpsewhich my-style.sty
+\end{command}
+
+\section{pdfLaTeX/CJK用Type 1フォント一式}
+\subsection{症状と事前確認}
+次のようなエラーは、IPAexのTrueTypeフォントだけでなく、
+pdfLaTeX/CJKが使うTFM/PFB/mapが不足していることを示す。
+\begin{command}
+I can't find file 'ipxm-r-u61'
+Font ... =ipxm-r-u61 ... not loadable:
+Metric (TFM) file not found.
+Fatal error occurred, no output PDF file produced!
+\end{command}
+\begin{command}
+kpsewhich ipaexm.ttf
+kpsewhich ipaexg.ttf
+kpsewhich ipxm-r-u61.tfm
+\end{command}
+
+\subsection{導入}
+IPAexフォントを確認・導入する。
+\begin{command}
+sudo apt update
+sudo apt install fonts-ipaexfont-mincho fonts-ipaexfont-gothic
+\end{command}
+DebianではType 1フォント一式を\texttt{texlive-fonts-extra}で導入する。
+容量が大きいため、先に空き容量を確認する。
+\begin{command}
+df -h /
+sudo apt install texlive-fonts-extra
+sudo mktexlsr
+sudo updmap-sys
+\end{command}
+導入結果を確認する。
+\begin{command}
+kpsewhich ipaexm.ttf
+kpsewhich ipaexg.ttf
+kpsewhich ipxm-r-u61.tfm
+kpsewhich ipxm-r-u61.pfb
+kpsewhich ipaex-type1.map
+\end{command}
+各コマンドでパスが表示されればTeX Liveから発見できている。
+\begin{command}
+sudo systemctl restart texnote-server
+systemctl is-active texnote-server
+\end{command}
+
+\section{日常の確認}
+\begin{command}
+systemctl status texnote-server --no-pager
+journalctl -u texnote-server -n 100 --no-pager
+journalctl -u texnote-server -f
+curl --fail-with-body http://192.168.3.11:8000/health
+df -h /
+free -h
+kpsewhich ファイル名.sty
+\end{command}
+
+\section{完了チェックリスト}
+\begin{itemize}
+\item[$\square$] OS、aarch64、容量、メモリ、IPを確認した。
+\item[$\square$] IPアドレスをDHCP予約した。
+\item[$\square$] 5種類のTeXエンジンがPDFを生成した。
+\item[$\square$] 仮想環境へFastAPIとUvicornを導入した。
+\item[$\square$] APIトークンの権限を600にした。
+\item[$\square$] \texttt{/health}と\texttt{/v1/auth-check}が成功した。
+\item[$\square$] systemdがenabledかつactiveになった。
+\item[$\square$] Pi再起動後も自動復旧した。
+\item[$\square$] iPad版・iPhone版の双方から版組できた。
+\item[$\square$] Type 1のTFM/PFB/mapを確認した。
+\item[$\square$] TCP 8000をインターネットへ公開していない。
+\end{itemize}
+
+\newpage
+\section{Docker版への移行}
+
+ここまでは、Raspberry Pi本体へTeX LiveとPython仮想環境を導入し、
+systemdからUvicornを直接起動する構成を説明した。
+本節では、同じ版組APIとTeX環境をDockerイメージへまとめる。
+
+Docker版はホスト側のPython仮想環境やTeX Liveに依存せず、
+\texttt{Dockerfile}、\texttt{compose.yaml}、\texttt{app.py}、
+\texttt{requirements.txt}から再構築できる。
+一方、TeX Liveと\texttt{texlive-fonts-extra}を含むため、イメージは大きくなり、
+初回ビルドには長い時間と数GB以上の空き容量を要する。
+
+\subsection{移行方針と注意事項}
+
+本手順では次の構成にする。
+\begin{itemize}
+\item ベースイメージはarm64対応の\texttt{python:3.11-slim-bookworm}を使う。
+\item TeX Live、日本語環境、IPAex、Type 1フォントをイメージへ組み込む。
+\item APIトークンはイメージへコピーせず、起動時に\texttt{server.env}から渡す。
+\item コンテナ内ではrootではなく専用ユーザー\texttt{texnote}で実行する。
+\item コンテナは読み取り専用とし、版組用一時ファイルだけを\texttt{/tmp}へ置く。
+\item ホストの\texttt{192.168.3.11:8000}だけをコンテナへ転送する。
+\item 現在のsystemd版は、Docker版のビルドと検査が終わるまで削除しない。
+\end{itemize}
+
+systemd版とDocker版は同じTCP 8000を同時に使用できない。
+Docker版を起動する直前にsystemd版を停止し、問題があれば直ちに戻せるようにする。
+また、Dockerが公開するポートはufwの規則を迂回する場合がある。
+本例のようにLAN側IPアドレスへ明示的にbindし、ルーターでは8000番を転送しない。
+
+\subsection{Docker EngineとComposeの導入}
+
+以下はRaspberry Pi上で実行する。Docker公式のDebian用APTリポジトリを使う。
+Debian 12とarm64はDocker Engineのサポート対象である。
+
+既存の競合パッケージがないか確認する。
+\begin{command}
+dpkg -l docker.io docker-compose docker-doc docker-buildx \
+  podman-docker containerd runc 2>/dev/null || true
+\end{command}
+既に別のDocker環境を運用している場合は、ここで削除せず構成を確認する。
+未導入の環境では、公式鍵とリポジトリを登録する。
+\begin{command}
+sudo apt update
+sudo apt install ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg \
+  -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: bookworm
+Components: stable
+Architectures: arm64
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt update
+sudo apt install \
+  docker-ce \
+  docker-ce-cli \
+  containerd.io \
+  docker-buildx-plugin \
+  docker-compose-plugin
+\end{command}
+導入結果を確認する。
+\begin{command}
+sudo systemctl is-enabled docker
+sudo systemctl is-active docker
+sudo docker version
+sudo docker compose version
+sudo docker run --rm hello-world
+\end{command}
+
+本書ではすべて\texttt{sudo docker}で実行する。
+ユーザーを\texttt{docker}グループへ追加すると\texttt{sudo}なしで操作できるが、
+そのユーザーには実質的にroot相当の権限が与えられるため、ここでは行わない。
+
+\subsection{Docker用ディレクトリの準備}
+
+既存のsystemd版と混同しないよう、Pi上に別ディレクトリを作る。
+\begin{command}
+mkdir -p /home/mat/texnote-server-docker
+chmod 700 /home/mat/texnote-server-docker
+\end{command}
+
+Mac側から現在のサーバープログラムを転送する。
+\begin{command}
+scp \
+  /Users/mat/Documents/Git/TeXNote/Server/P2/progs/app.py \
+  /Users/mat/Documents/Git/TeXNote/Server/P2/progs/requirements.txt \
+  mat@192.168.3.11:/home/mat/texnote-server-docker/
+\end{command}
+
+APIトークンは既存の値を引き継げる。Pi上でコピーし、所有者以外から読めないようにする。
+\begin{command}
+sudo install -o mat -g mat -m 600 \
+  /home/mat/texnote-server/server.env \
+  /home/mat/texnote-server-docker/server.env
+\end{command}
+新しいトークンへ交換する場合は次のように作る。
+この場合、iPad版とiPhone版の登録値も更新する。
+\begin{command}
+cd /home/mat/texnote-server-docker
+umask 077
+printf 'TEXNOTE_API_TOKEN=' > server.env
+openssl rand -hex 32 >> server.env
+chmod 600 server.env
+\end{command}
+
+\subsection{Dockerfileの作成}
+
+Pi上の\texttt{/home/mat/texnote-server-docker/Dockerfile}を次の内容で作成する。
+\begin{command}
+cd /home/mat/texnote-server-docker
+nano Dockerfile
+\end{command}
+\begin{command}
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        texlive \
+        texlive-latex-extra \
+        texlive-luatex \
+        texlive-xetex \
+        texlive-lang-japanese \
+        texlive-pictures \
+        texlive-science \
+        texlive-fonts-extra \
+        fonts-noto-cjk \
+        fonts-ipaexfont-mincho \
+        fonts-ipaexfont-gothic \
+    && mktexlsr \
+    && updmap-sys \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
+COPY app.py ./
+
+RUN useradd --system --uid 10001 --create-home texnote \
+    && chown -R texnote:texnote /app
+
+USER texnote
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)" || exit 1
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+\end{command}
+
+\texttt{app.py}はTeXエンジンを\texttt{/usr/bin}の絶対パスで呼び出す。
+Debianパッケージをコンテナへ導入しているため、既存コードを変更せず利用できる。
+
+\subsection{ビルドコンテキストから秘密情報を除外}
+
+\texttt{/home/mat/texnote-server-docker/.dockerignore}を作成する。
+\begin{command}
+cd /home/mat/texnote-server-docker
+nano .dockerignore
+\end{command}
+\begin{command}
+.git
+.DS_Store
+.venv
+__pycache__
+*.pyc
+.api-token
+server.env
+docs
+out
+\end{command}
+
+\texttt{server.env}を除外することが重要である。
+これにより、APIトークンがイメージのlayerやbuild contextへ入らない。
+
+\subsection{Compose設定の作成}
+
+\texttt{/home/mat/texnote-server-docker/compose.yaml}を作成する。
+\begin{command}
+cd /home/mat/texnote-server-docker
+nano compose.yaml
+\end{command}
+\begin{command}
+services:
+  texnote-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: texnote-server:bookworm
+    restart: unless-stopped
+    env_file:
+      - ./server.env
+    ports:
+      - "192.168.3.11:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=2g,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+\end{command}
+
+このAPIは版組ごとに\texttt{/tmp}下へ一時ディレクトリを作り、処理後に削除する。
+したがって永続volumeは不要である。
+\texttt{read\_only}と\texttt{tmpfs}により、イメージ本体は変更せず一時領域だけを書き込み可能にする。
+
+設定と秘密情報の権限を確認する。
+\begin{command}
+cd /home/mat/texnote-server-docker
+chmod 600 server.env
+ls -la
+sudo docker compose config --quiet
+\end{command}
+\texttt{docker compose config}を引数なしで実行すると、展開後の環境変数が表示される場合がある。
+トークンを画面やログへ出したくない場合は\texttt{--quiet}だけを使う。
+
+\subsection{イメージのビルドとTeX環境の検査}
+
+systemd版を動かしたままイメージをビルドできる。
+初回はTeX Live一式をダウンロードするため時間がかかる。
+\begin{command}
+cd /home/mat/texnote-server-docker
+df -h /
+sudo docker compose build
+sudo docker image ls texnote-server:bookworm
+sudo docker system df
+\end{command}
+
+APIサーバーを公開する前に、完成したイメージ内を検査する。
+\begin{command}
+sudo docker compose run --rm --no-deps texnote-server \
+  sh -lc 'uname -m && python --version'
+
+sudo docker compose run --rm --no-deps texnote-server \
+  sh -lc 'command -v lualatex; command -v xelatex; command -v pdflatex; command -v uplatex; command -v platex; command -v dvipdfmx; command -v extractbb'
+
+sudo docker compose run --rm --no-deps texnote-server \
+  sh -lc 'kpsewhich ipaexm.ttf; kpsewhich ipaexg.ttf; kpsewhich ipxm-r-u61.tfm; kpsewhich ipxm-r-u61.pfb; kpsewhich ipaex-type1.map'
+\end{command}
+すべての実行ファイルとフォントでパスが表示されることを確認する。
+
+\subsection{systemd版からDocker版への切替}
+
+まずsystemd版の現在状態を記録する。
+\begin{command}
+systemctl is-enabled texnote-server
+systemctl is-active texnote-server
+\end{command}
+Docker版とポートが競合しないよう、systemd版を停止して自動起動を無効にする。
+サービスファイルやPython仮想環境は、切替確認が終わるまで削除しない。
+\begin{command}
+sudo systemctl disable --now texnote-server
+systemctl is-active texnote-server
+\end{command}
+
+Docker版をバックグラウンド起動する。
+\begin{command}
+cd /home/mat/texnote-server-docker
+sudo docker compose up -d
+sudo docker compose ps
+sudo docker compose logs --tail=100 texnote-server
+\end{command}
+
+Pi上で確認する。
+\begin{command}
+curl --fail-with-body http://127.0.0.1:8000/health
+sudo docker inspect \
+  --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+  texnote-server-docker-texnote-server-1
+\end{command}
+Composeのproject名やディレクトリ名を変えた場合、コンテナ名も変わる。
+正確な名前は\texttt{sudo docker compose ps}で確認する。
+
+MacからLAN経由で確認する。
+\begin{command}
+curl --fail-with-body http://192.168.3.11:8000/health
+
+TEXNOTE_TOKEN="$(ssh mat@192.168.3.11 \
+  "sed -n 's/^TEXNOTE_API_TOKEN=//p' /home/mat/texnote-server-docker/server.env")"
+curl --fail-with-body \
+  http://192.168.3.11:8000/v1/auth-check \
+  -H "Authorization: Bearer $TEXNOTE_TOKEN"
+unset TEXNOTE_TOKEN
+\end{command}
+成功時は\texttt{\{"status":"ok"\}}が返る。
+続いてiPad版・iPhone版から実際に5種類のエンジンを順に版組する。
+
+\subsection{再起動後の自動復旧試験}
+
+Composeの\texttt{restart: unless-stopped}とDockerサービスの自動起動を確認する。
+\begin{command}
+sudo reboot
+\end{command}
+Piが戻った後、Macから確認する。
+\begin{command}
+ping -c 3 192.168.3.11
+curl --connect-timeout 10 --fail-with-body \
+  http://192.168.3.11:8000/health
+ssh mat@192.168.3.11 \
+  'sudo systemctl is-active docker; cd /home/mat/texnote-server-docker && sudo docker compose ps'
+\end{command}
+
+\subsection{更新、ログ、停止}
+
+\subsubsection{Docker Compose版の更新}
+
+\texttt{app.py}または\texttt{requirements.txt}を更新した場合は、
+まずPi上の現行ファイルをバックアップする。
+\begin{command}
+ssh mat@192.168.3.11
+cd /home/mat/texnote-server-docker
+cp -p app.py app.py.backup
+cp -p requirements.txt requirements.txt.backup
+exit
+\end{command}
+Macから更新ファイルを転送する。
+\begin{command}
+scp \
+  /Users/mat/Documents/Git/TeXNote/Server/P2/progs/app.py \
+  /Users/mat/Documents/Git/TeXNote/Server/P2/progs/requirements.txt \
+  mat@192.168.3.11:/home/mat/texnote-server-docker/
+
+\end{command}
+Pi上でPython構文とCompose設定を検査してから、イメージを再ビルドする。
+単なる\texttt{docker compose restart}ではイメージ内の\texttt{app.py}が更新されないため、
+必ず\texttt{--build}を付ける。
+\begin{command}
+ssh mat@192.168.3.11
+cd /home/mat/texnote-server-docker
+python3 -m py_compile app.py
+sudo docker compose config --quiet
+sudo docker compose up -d --build
+sudo docker compose ps
+sudo docker compose logs --tail=100 texnote-server
+curl --fail-with-body http://192.168.3.11:8000/health
+\end{command}
+異常があればバックアップを戻し、旧イメージを再ビルドする。
+\begin{command}
+cd /home/mat/texnote-server-docker
+cp -p app.py.backup app.py
+cp -p requirements.txt.backup requirements.txt
+sudo docker compose up -d --build
+sudo docker compose ps
+\end{command}
+
+添付リソースAPIを\texttt{fileName}から\texttt{relativePath}へ変更した版では、
+Docker版の\texttt{/health}確認後に対応するiPad・iPhone版アプリを更新する。
+更新後はサブフォルダ内のリソースを含むCardで版組、保存、再読込を確認する。
+
+日常の確認には次を使う。
+\begin{command}
+cd /home/mat/texnote-server-docker
+sudo docker compose ps
+sudo docker compose logs --tail=100 texnote-server
+sudo docker compose logs -f texnote-server
+sudo docker stats --no-stream
+sudo docker system df
+\end{command}
+ログ追跡はCtrl-Cで終了してよい。コンテナ自体は停止しない。
+
+明示的に停止・再開する場合：
+\begin{command}
+cd /home/mat/texnote-server-docker
+sudo docker compose stop
+sudo docker compose start
+\end{command}
+コンテナとCompose用networkを削除するが、ビルド済みイメージを残す場合：
+\begin{command}
+cd /home/mat/texnote-server-docker
+sudo docker compose down
+\end{command}
+未使用イメージだけを整理する場合は、削除対象を先に確認する。
+\begin{command}
+sudo docker image ls
+sudo docker image prune
+\end{command}
+\texttt{docker system prune -a}は広範囲のイメージやcacheを削除するため、
+本手順では使用しない。
+
+\subsection{問題発生時にsystemd版へ戻す}
+
+Docker版で問題が発生した場合は、次の順で元の構成へ戻す。
+\begin{command}
+cd /home/mat/texnote-server-docker
+sudo docker compose down
+sudo systemctl enable --now texnote-server
+systemctl is-enabled texnote-server
+systemctl is-active texnote-server
+curl --fail-with-body http://192.168.3.11:8000/health
+\end{command}
+Docker版とsystemd版の両方を同時に起動しない。
+
+\subsection{Docker版完了チェックリスト}
+\begin{itemize}
+\item[$\square$] Docker EngineとCompose pluginが導入された。
+\item[$\square$] Dockerサービスがenabledかつactiveになった。
+\item[$\square$] \texttt{server.env}がbuild contextから除外され、権限600になった。
+\item[$\square$] イメージ内で5種類のTeXエンジンを発見できた。
+\item[$\square$] IPAexとType 1のTFM/PFB/mapを発見できた。
+\item[$\square$] systemd版を停止してからDocker版を起動した。
+\item[$\square$] \texttt{/health}と\texttt{/v1/auth-check}が成功した。
+\item[$\square$] iPad版・iPhone版から実際に版組できた。
+\item[$\square$] Pi再起動後にコンテナが自動復旧した。
+\item[$\square$] TCP 8000をインターネットへ公開していない。
+\item[$\square$] systemd版への復旧手順を残している。
+\end{itemize}
+
+\subsection{Docker公式資料}
+\begin{itemize}
+\item DebianへのDocker Engine導入：
+\href{https://docs.docker.com/engine/install/debian/}{Docker Docs: Install Docker Engine on Debian}
+\item Linux版Compose plugin：
+\href{https://docs.docker.com/compose/install/linux/}{Docker Docs: Install the Compose plugin}
+\item Composeの\texttt{env\_file}：
+\href{https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/}{Docker Docs: Set environment variables}
+\item Composeサービス設定：
+\href{https://docs.docker.com/reference/compose-file/services/}{Docker Docs: Define services}
+\end{itemize}
+
+\section*{補足}
+OSのメジャー更新、ユーザー名、IPアドレス、TeXNoteの保存場所を変えた場合は、
+本文中のパスと設定値を一括して読み替えること。
+
+\section*{ソース・プログラム}
+
+\lstinputlisting[caption = requirements.txt ,label = text]{progs/requirements.txt}
+
+\lstinputlisting[caption = app.py ,label = app]{progs/app.py}
+
+\end{document}

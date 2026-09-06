@@ -1,7 +1,7 @@
 import Foundation
 
 struct NoteDocument: Codable, Sendable {
-    var formatVersion = 6
+    var formatVersion = 8
     var id: UUID
     var name: String
     var cards: [TeXCard]

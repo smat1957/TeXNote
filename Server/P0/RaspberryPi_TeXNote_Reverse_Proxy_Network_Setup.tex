@@ -1,0 +1,897 @@
+\documentclass[uplatex,a4paper,11pt]{jsarticle}
+\usepackage[margin=22mm]{geometry}
+\usepackage[dvipdfmx]{hyperref,xcolor}
+\usepackage{fvextra,enumitem,longtable,booktabs,amssymb}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  urlcolor=blue!65!black,
+  pdftitle={TeXNote P0リバースプロキシ・VLAN・ファイアウォール構築手順}
+}
+\definecolor{commandbg}{RGB}{244,246,248}
+\DefineVerbatimEnvironment{command}{Verbatim}{
+  fontsize=\small,
+  frame=single,
+  rulecolor=\color{gray!55},
+  breaklines=true,
+  breakanywhere=true
+}
+\setlist{nosep}
+
+\title{TeXNote P0リバースプロキシ・VLAN・\
+ファイアウォール構築手順\
+\large P1上での先行構築からP0分離まで}
+\author{}
+\date{2026年8月24日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本書は、TeXNoteのP1認証サーバーへNginxリバースプロキシとUFWを先行導入し、
+将来VLAN対応ルーターとマネージドスイッチを購入した後、公開入口を専用Raspberry Pi
+「P0」へ移す手順をまとめたものである。P1はユーザー認証とP2中継、P2はTeXコンパイル、
+P0はHTTPS終端と外部公開境界を担当する。作業は段階ごとに動作確認し、問題があれば
+直前の構成へ戻せるように進める。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{目的と最終構成}
+
+\subsection{現在から最終形への移行}
+
+最初はP1上でNginxを動かし、リバースプロキシを経由するアプリ構成を先に完成させる。
+
+\begin{command}
+段階1（LAN内試験）
+
+TeXNote
+   | HTTP :80
+   v
+P1 Nginx
+   | HTTP 127.0.0.1:8000
+   v
+P1 FastAPI
+   | 内部トークン付きHTTP
+   v
+P2 FastAPI
+\end{command}
+
+VLAN対応機器とP0を準備した後、NginxとHTTPS証明書をP0へ移す。
+
+\begin{command}
+最終構成
+
+Internet
+   | HTTPS :443
+   v
+P0 Nginx（DMZ VLAN）
+   | HTTP :8000（P0からだけ許可）
+   v
+P1 FastAPI（認証 VLAN）
+   | HTTP :8000（P1からだけ許可）
+   v
+P2 FastAPI（コンパイル VLAN）
+\end{command}
+
+外部へ公開するのはP0のTCP 443だけである。P1、P2、SSH、TCP 8000をインターネットへ
+直接公開しない。
+
+\subsection{各機器の役割}
+
+\begin{longtable}{@{}p{18mm}p{46mm}p{82mm}@{}}
+\toprule
+機器 & 役割 & 保持するもの・実行するもの\\
+\midrule
+P0 & 公開境界 & Nginx、HTTPS証明書、32 MiB制限、アクセスログ\\
+P1 & 認証・API中継 & FastAPI、JWT、SQLiteユーザーDB、利用制限、P2内部トークン\\
+P2 & TeXコンパイル & FastAPI、TeX Live、添付検査、隔離した版組処理\\
+\bottomrule
+\end{longtable}
+
+\section{作業前の原則}
+
+\begin{enumerate}
+  \item 現行サービスの状態と設定ファイルを記録する。
+  \item 新しい経路が動くことを確認してから古い経路を閉じる。
+  \item SSH許可規則を追加してからUFWを有効にする。
+  \item P1上のNginxが完成するまでTCP 8000の待受方法を変更しない。
+  \item P0移行が完了するまでP1上のNginx設定を削除しない。
+  \item VLAN間は既定拒否とし、必要な送信元、宛先、ポートだけを許可する。
+  \item IPv4だけでなくIPv6側の公開状態も確認する。
+\end{enumerate}
+
+以下の現行値を前提とする。異なる場合は読み替える。
+
+\begin{longtable}{@{}p{52mm}p{96mm}@{}}
+\toprule
+項目 & 現行値\\
+\midrule
+P1 LANアドレス & \texttt{192.168.3.21}\\
+P2 LANアドレス & \texttt{192.168.3.4}\\
+P1 systemdサービス & \texttt{tex-auth.service}\\
+P1プログラム & \texttt{/home/mat/tex-auth}\\
+P1仮想環境 & \texttt{/home/mat/tex-auth/.auth-env}\\
+P1 FastAPIポート & TCP 8000\\
+Nginx LAN試験ポート & TCP 80\\
+公開時HTTPSポート & TCP 443\\
+HTTP要求上限 & P0、P1、P2すべて32 MiB\\
+\bottomrule
+\end{longtable}
+
+\newpage
+\section{全体の実施順序}
+
+本書とP1構築手順書に分散している作業を、実機へ適用する順番にまとめる。
+各段階では、確認項目がすべて成功してから次へ進む。失敗した場合は次の段階へ進まず、
+その段階で退避した設定へ戻す。
+
+\subsection{1：P1ソースとプラン管理コマンドを更新する}
+
+最初に、P1の現行プログラムとSQLite DBを退避する。P1上で実行する。
+
+\begin{command}
+cd /home/mat/tex-auth
+backup_dir=/home/mat/tex-auth-backup-before-plan
+mkdir -p "$backup_dir"
+cp -p main.py auth.py database.py tex_service.db "$backup_dir"/
+test ! -f plans.py || cp -p plans.py "$backup_dir"/
+test ! -d tools || cp -a tools "$backup_dir"/
+\end{command}
+
+管理用MacのTeXNoteリポジトリ直下から、秘密値とDBを含めずに現行ソースを転送する。
+
+\begin{command}
+scp Server/P1/progs/main.py \
+    Server/P1/progs/auth.py \
+    Server/P1/progs/database.py \
+    Server/P1/progs/plans.py \
+    mat@192.168.3.21:/home/mat/tex-auth/
+
+scp -r Server/P1/progs/tools \
+    mat@192.168.3.21:/home/mat/tex-auth/
+\end{command}
+
+P1上で構文を検査してからサービスを再起動する。既存DBに対して
+\texttt{tools.init\_db}を実行し直してはならない。
+
+\begin{command}
+cd /home/mat/tex-auth
+source .auth-env/bin/activate
+python -m py_compile *.py tools/*.py
+sudo systemctl restart tex-auth.service
+systemctl status tex-auth.service --no-pager -l
+journalctl -u tex-auth.service -n 100 --no-pager
+\end{command}
+
+\subsection{2：管理者コマンドでplan変更を確認する}
+
+既存ユーザーを例としてStandardへ変更し、DBの結果を確認する。メールアドレスは実際の
+登録ユーザーへ置き換える。
+
+\begin{command}
+cd /home/mat/tex-auth
+source .auth-env/bin/activate
+python -m tools.change_plan user@example.com standard
+python -m tools.check02 user@example.com
+\end{command}
+
+\texttt{change\_plan}が変更前と変更後のplanを表示し、\texttt{check02}にも
+\texttt{standard}が表示されることを確認する。変更後のplanは要求ごとにDBから読み込むため、
+plan変更だけを理由にP1を再起動する必要はない。現段階では\texttt{/me}を利用した
+プラン変更UIは作らず、管理者コマンドだけを正式な変更経路とする。
+
+\subsection{3：P1上のNginx経由を完成させる}
+
+本書の「段階1：P1上にNginxを構築する」に従う。Uvicornの待受を変更する前に、
+Nginx経由の\texttt{/login}、\texttt{/me}、\texttt{/compile}を確認する。
+同時に、Nginx経由の\texttt{/compile-test}、\texttt{/docs}、
+\texttt{/openapi.json}が404になることを確認する。
+
+Uvicornが\texttt{127.0.0.1:8000}だけで待ち受けていることを確認する。実機が既に
+この状態なら設定編集、\texttt{daemon-reload}、待受変更を目的としたP1再起動は行わない。
+\texttt{0.0.0.0:8000}または\texttt{[::]:8000}で待ち受けている場合だけ、Nginx経由の
+正常動作を確認した後に\texttt{127.0.0.1:8000}限定へ変更する。
+\texttt{/compile-test}は削除せず、P1へSSH接続した管理者が
+\texttt{127.0.0.1:8000/compile-test}を使う保守APIとして残す。
+
+\subsection{4：P1のUFWを適用する}
+
+SSHとNginxへの許可規則を先に追加してからUFWを有効にする。別ターミナルから新しい
+SSH接続が成功するまで、作業中のSSH接続を閉じない。LAN上の端末からP1のTCP 8000へ
+直接接続できず、P1自身から\texttt{127.0.0.1:8000}へ接続できることを確認する。
+その後P1を再起動し、Nginx、P1、UFWが自動復旧することを確認する。
+
+\subsection{5：P0とVLANへ公開境界を移す}
+
+段階1が安定してから、本書の「段階2：P0を準備する」以降へ進む。P0のNginxは
+\texttt{/login}、\texttt{/me}、\texttt{/compile}だけをP1へ転送する。
+P1のUvicornは認証VLAN側アドレスだけで待ち受け、P1のUFWはP0からのTCP 8000だけを
+許可する。P2のUFWはP1からのTCP 8000だけを許可する。
+
+P0経由の通常版組まで成功し、P0からP2へ直接接続できないことを確認するまで、P1上の
+Nginx設定を削除しない。問題が発生した場合は、本書の切戻し手順で段階1へ戻す。
+
+\subsection{6：HTTPSを設定して外部公開する}
+
+最後にP0へHTTPS証明書を設定する。ルーターでインターネットから転送するのは
+P0のTCP 443だけとし、TCP 22、80、8000、P1、P2を直接公開しない。
+外部から\texttt{/compile-test}、\texttt{/docs}、\texttt{/openapi.json}が
+404となり、アプリの\texttt{/login}、\texttt{/me}、\texttt{/compile}だけが
+HTTPSで利用できることを最終確認する。
+
+\newpage
+\section{段階1：P1上にNginxを構築する}
+
+\subsection{現状確認とバックアップ}
+
+P1上で実行する。
+
+\begin{command}
+systemctl status tex-auth.service --no-pager -l
+systemctl is-enabled tex-auth.service
+systemctl is-active tex-auth.service
+sudo ss -ltnp | grep -E ':8000|:80|:443'
+\end{command}
+
+現在のサービスファイルを退避する。
+
+\begin{command}
+sudo cp -p \
+  /etc/systemd/system/tex-auth.service \
+  /etc/systemd/system/tex-auth.service.before-nginx
+\end{command}
+
+\subsection{Nginxの導入}
+
+\begin{command}
+sudo apt update
+sudo apt install nginx
+nginx -v
+sudo systemctl status nginx --no-pager
+\end{command}
+
+初期ページを確認する。
+
+\begin{command}
+curl -I http://192.168.3.21/
+\end{command}
+
+\subsection{P1用Nginx設定}
+
+\begin{command}
+sudoedit /etc/nginx/sites-available/texnote-p1
+\end{command}
+
+次の内容を設定する。\texttt{proxy\_pass}の末尾にはスラッシュを付けず、
+\texttt{/login}、\texttt{/me}、\texttt{/compile}の完全一致だけをP1へ渡す。
+\texttt{location /}でその他を404にするため、保守用の\texttt{/compile-test}、
+\texttt{/docs}、\texttt{/openapi.json}はNginx経由で公開されない。
+
+\begin{command}
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name _;
+    server_tokens off;
+
+    client_max_body_size 32m;
+    client_body_timeout 30s;
+
+    access_log /var/log/nginx/texnote-p1-access.log;
+    error_log  /var/log/nginx/texnote-p1-error.log;
+
+    location = /login {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/proxy_params;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
+    location = /me {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/proxy_params;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
+    location = /compile {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/proxy_params;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+
+    location / {
+        return 404;
+    }
+}
+\end{command}
+
+P0、P1、P2の要求上限を32 MiBへ統一する。Nginxの既定値は1 MiBであるため、
+\texttt{client\_max\_body\_size 32m;}を省略しない。
+
+\subsection{サイトの有効化}
+
+\begin{command}
+sudo ln -s \
+  /etc/nginx/sites-available/texnote-p1 \
+  /etc/nginx/sites-enabled/texnote-p1
+sudo unlink /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+sudo systemctl enable nginx
+\end{command}
+
+\texttt{nginx -t}が\texttt{syntax is ok}、\texttt{test is successful}を返してから
+reloadする。
+
+\subsection{Nginx経由とUvicorn待受の確認}
+
+最初に、現在のsystemd設定と実際の待受アドレスを確認する。
+
+\begin{command}
+systemctl cat tex-auth.service
+sudo ss -ltnp | grep ':8000'
+\end{command}
+
+実機が既に\texttt{127.0.0.1:8000}だけで待ち受けている場合は、それが正しい現行状態で
+ある。待受設定を変更せず、その状態のままNginx経由を確認する。
+
+\begin{command}
+curl --fail-with-body http://127.0.0.1:8000/openapi.json >/dev/null
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  http://192.168.3.21/openapi.json)" = 404
+test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  http://192.168.3.21/compile-test)" = 404
+\end{command}
+
+最初の要求はP1自身の保守APIを直接確認する。後の2要求はNginxが公開対象外の
+パスをP1へ転送せず、認証処理より前に404を返すことを確認する。
+
+登録済みユーザーでログインする。
+
+\begin{command}
+curl -sS -X POST http://192.168.3.21/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "email":"<登録済みメールアドレス>",
+    "password":"<パスワード>"
+  }'
+\end{command}
+
+\subsection{必要な場合だけUvicornをlocalhost限定に変更}
+
+前項の確認で\texttt{127.0.0.1:8000}だけが表示された場合、この項の編集操作はすべて
+省略する。\texttt{0.0.0.0:8000}または\texttt{[::]:8000}が表示された場合に限り、
+Nginx経由のログインが成功してから変更する。
+
+\begin{command}
+sudoedit /etc/systemd/system/tex-auth.service
+\end{command}
+
+\texttt{ExecStart}を1行で次のようにする。
+
+\begin{command}
+ExecStart=/home/mat/tex-auth/.auth-env/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+\end{command}
+
+設定を編集した場合だけ反映する。
+
+\begin{command}
+sudo systemctl daemon-reload
+sudo systemctl restart tex-auth.service
+systemctl status tex-auth.service --no-pager -l
+journalctl -u tex-auth.service -n 100 --no-pager
+\end{command}
+
+編集を省略した場合も含め、最後に待受状態を確認する。
+
+\begin{command}
+sudo ss -ltnp | grep -E ':8000|:80|:443'
+\end{command}
+
+期待する待受状態は次のとおりである。
+
+\begin{command}
+0.0.0.0:80       nginx
+[::]:80          nginx
+127.0.0.1:8000   uvicorn
+\end{command}
+
+\texttt{0.0.0.0:8000}が残っていてはいけない。
+
+\subsection{TeXNoteの接続先変更}
+
+macOS版、iPad版、iPhone版のP1 URLを次のように変更する。
+
+\begin{command}
+変更前: http://192.168.3.21:8000
+変更後: http://192.168.3.21
+\end{command}
+
+80番はHTTPの標準ポートなので省略できる。各アプリでログイン、\texttt{/me}、通常版組、
+画像付き版組、TeXエラー表示を確認する。
+
+\subsection{ログ確認}
+
+\begin{command}
+sudo tail -n 100 /var/log/nginx/texnote-p1-access.log
+sudo tail -n 100 /var/log/nginx/texnote-p1-error.log
+journalctl -u nginx -n 100 --no-pager
+\end{command}
+
+リアルタイム監視は次のとおり。
+
+\begin{command}
+sudo tail -f \
+  /var/log/nginx/texnote-p1-access.log \
+  /var/log/nginx/texnote-p1-error.log
+\end{command}
+
+終了は\texttt{Ctrl+C}で行う。
+
+\newpage
+\section{段階1：P1のUFWを設定する}
+
+\subsection{UFWの導入}
+
+\begin{command}
+sudo apt update
+sudo apt install ufw
+ufw --version
+sudo systemctl status ufw --no-pager
+\end{command}
+
+\subsection{有効化前にSSHとNginxを許可}
+
+LANが\texttt{192.168.3.0/24}の場合の例を示す。現在のSSH接続を閉じずに作業する。
+
+\begin{command}
+sudo ufw allow from 192.168.3.0/24 to any port 22 proto tcp
+sudo ufw allow from 192.168.3.0/24 to any port 80 proto tcp
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw deny 8000/tcp
+sudo ufw show added
+\end{command}
+
+内容を確認してから有効化する。
+
+\begin{command}
+sudo ufw enable
+sudo ufw status verbose
+sudo ufw status numbered
+\end{command}
+
+Macの別ターミナルから新しいSSH接続を試す。
+
+\begin{command}
+ssh mat@192.168.3.21
+\end{command}
+
+新しいSSH接続に成功するまで、元のSSH接続を終了しない。
+
+\subsection{UFW適用後の確認}
+
+Nginx経由の\texttt{/login}がP1へ到達する必要がある。空JSONに対する422は、
+NginxではなくP1の入力検証が応答したことを示す。
+
+\begin{command}
+test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -d '{}' \
+  http://192.168.3.21/login)" = 422
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  http://192.168.3.21/openapi.json)" = 404
+\end{command}
+
+LANからUvicornへ直接接続する次のコマンドは失敗するのが正常である。
+
+\begin{command}
+curl --connect-timeout 5 http://192.168.3.21:8000/docs
+\end{command}
+
+P1自身からlocalhostのUvicornへは接続できる。
+
+\begin{command}
+curl --fail-with-body \
+  http://127.0.0.1:8000/openapi.json >/dev/null
+\end{command}
+
+\subsection{再起動試験}
+
+\begin{command}
+sudo reboot
+\end{command}
+
+再接続後に確認する。
+
+\begin{command}
+systemctl is-active nginx
+systemctl is-enabled nginx
+systemctl is-active tex-auth.service
+systemctl is-enabled tex-auth.service
+sudo ufw status verbose
+sudo ss -ltnp | grep -E ':8000|:80|:443'
+curl --fail-with-body http://127.0.0.1:8000/openapi.json >/dev/null
+\end{command}
+
+\section{段階1の切戻し}
+
+Nginx経由で問題が発生した場合、バックアップしたsystemd設定を戻す。
+
+\begin{command}
+sudo cp -p \
+  /etc/systemd/system/tex-auth.service.before-nginx \
+  /etc/systemd/system/tex-auth.service
+sudo systemctl daemon-reload
+sudo systemctl restart tex-auth.service
+sudo systemctl disable --now nginx
+\end{command}
+
+UFWの8000拒否規則を番号で確認して削除する。
+
+\begin{command}
+sudo ufw status numbered
+sudo ufw delete <8000/tcp拒否規則の番号>
+\end{command}
+
+TeXNoteのURLを従来値へ戻す。
+
+\begin{command}
+http://192.168.3.21:8000
+\end{command}
+
+\newpage
+\section{VLAN機器の安価な購入案}
+
+\subsection{推奨する最小構成}
+
+2026年8月時点で日本国内から入手しやすい構成例を示す。価格と販売状況は購入時に
+再確認する。
+
+\begin{longtable}{@{}p{40mm}p{55mm}p{50mm}@{}}
+\toprule
+機器 & 候補 & 価格目安\\
+\midrule
+VLANルーター & TP-Link ER605 V2 & 約9,500～11,500円\\
+5ポートVLANスイッチ & TP-Link TL-SG105E & 約3,000～3,500円\\
+8ポートVLANスイッチ & TP-Link TL-SG108E & 約5,000～6,500円\\
+\bottomrule
+\end{longtable}
+
+ER605は802.1Q VLAN、複数ネットワーク、送信元・宛先IPによるACL、ファイアウォールに
+対応する。TL-SG105E/TL-SG108Eは802.1QタグVLANに対応する。
+
+P0、P1、P2、管理用Mac、ルーターとのtrunkで5ポートをすべて使用するため、長期運用では
+8ポート版が扱いやすい。最小費用を優先する場合は5ポート版でも構築できる。
+
+\subsection{購入前に既存ルーターを確認}
+
+既存ルーターが次のすべてへ対応する場合、ER605を追加せずVLANスイッチだけで構築できる。
+
+\begin{itemize}
+  \item 802.1Q VLAN
+  \item VLANごとのIPインターフェースとDHCP
+  \item VLAN間ACL
+  \item 送信元、宛先、プロトコル、ポートによる許可・拒否
+  \item ポート転送
+\end{itemize}
+
+家庭用ルーターの「VLAN」がIPTV専用機能だけの場合は使用できない。
+
+\subsection{参考資料}
+
+\begin{sloppypar}
+\begin{itemize}
+  \item ER605：\url{https://www.tp-link.com/jp/business-networking/vpn-router/er605/v2/}
+  \item TL-SG105E：\url{https://www.tp-link.com/jp/business-networking/easy-smart-switch/tl-sg105e/}
+  \item Omada複数ネットワークとACL：\url{https://www.tp-link.com/jp/support/faq/3061/}
+  \item Omada router-on-a-stick：\url{https://www.tp-link.com/jp/support/faq/3307/}
+  \item Nginx proxy module：\url{https://nginx.org/en/docs/http/ngx_http_proxy_module.html}
+  \item Nginx client\_max\_body\_size：\url{https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size}
+  \item Raspberry Pi UFW：\url{https://www.raspberrypi.com/documentation/security/ufw.html}
+\end{itemize}
+\end{sloppypar}
+
+\newpage
+\section{段階2：VLANネットワークを構築する}
+
+\subsection{VLANとアドレス設計}
+
+\begin{longtable}{@{}p{18mm}p{30mm}p{48mm}p{48mm}@{}}
+\toprule
+VLAN & 用途 & ネットワーク & 固定アドレス例\\
+\midrule
+20 & DMZ & \texttt{192.168.20.0/24} & P0 \texttt{192.168.20.10}\\
+30 & 認証 & \texttt{192.168.30.0/24} & P1 \texttt{192.168.30.10}\\
+40 & コンパイル & \texttt{192.168.40.0/24} & P2 \texttt{192.168.40.10}\\
+99 & 管理 & \texttt{192.168.99.0/24} & 管理用Mac\\
+\bottomrule
+\end{longtable}
+
+VLANルーターの各ゲートウェイを\texttt{192.168.X.1}とする。
+
+\subsection{スイッチのポート設計}
+
+\begin{longtable}{@{}p{18mm}p{38mm}p{58mm}p{20mm}@{}}
+\toprule
+ポート & 接続先 & VLAN設定 & PVID\\
+\midrule
+1 & VLANルーター & VLAN 20/30/40/99 Tagged & 99\\
+2 & P0 & VLAN 20 Untagged & 20\\
+3 & P1 & VLAN 30 Untagged & 30\\
+4 & P2 & VLAN 40 Untagged & 40\\
+5 & 管理用Mac & VLAN 99 Untagged & 99\\
+\bottomrule
+\end{longtable}
+
+P0、P1、P2は通常のタグなしEthernetを使用し、VLANタグはスイッチ側で付け外しする。
+
+\subsection{VLAN間ACL}
+
+許可規則を拒否規則より先に置く。
+
+\begin{longtable}{@{}p{34mm}p{38mm}p{31mm}p{39mm}@{}}
+\toprule
+送信元 & 宛先 & ポート & 動作\\
+\midrule
+管理 VLAN 99 & P0/P1/P2 & TCP 22 & 許可\\
+P0 & P1 & TCP 8000 & 許可\\
+P1 & P2 & TCP 8000 & 許可\\
+DMZ VLAN 20 & 認証 VLAN 30 & 上記以外 & 拒否\\
+DMZ VLAN 20 & コンパイル VLAN 40 & すべて & 拒否\\
+認証 VLAN 30 & コンパイル VLAN 40 & 上記以外 & 拒否\\
+サーバー VLAN & 管理 VLAN 99 & すべて & 拒否\\
+\bottomrule
+\end{longtable}
+
+OS更新に必要なDNS、NTP、HTTPSの外向き通信は動作確認しながら許可する。二重ルーター構成では、
+サーバーVLANから既存家庭内LANへの通信も拒否する。IPv6を使用する場合はIPv6にも同等の
+規則を設定し、未設定の間はサーバーVLANへのグローバルIPv6配布を止める。
+
+\section{段階2：P0を準備する}
+
+\subsection{OSと管理ユーザー}
+
+P0へ64-bit Raspberry Pi OS LiteまたはDebianを導入し、固定アドレス
+\texttt{192.168.20.10}を設定する。初期設定後、更新する。
+
+\begin{command}
+sudo apt update
+sudo apt full-upgrade
+sudo reboot
+\end{command}
+
+管理用SSHはVLAN 99からだけ許可し、インターネットへ22番を転送しない。
+
+\subsection{NginxとUFWの導入}
+
+\begin{command}
+sudo apt install nginx ufw
+sudo ufw allow from 192.168.99.0/24 to any port 22 proto tcp
+sudo ufw allow 443/tcp
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw enable
+sudo ufw status verbose
+\end{command}
+
+公開前のLAN試験で80番が必要な期間だけ、管理VLANまたはLANから限定して許可する。
+
+\begin{command}
+sudo ufw allow from 192.168.99.0/24 to any port 80 proto tcp
+\end{command}
+
+\section{段階2：NginxをP1からP0へ移す}
+
+\subsection{設定ファイルの転送}
+
+リポジトリで管理するP0用設定をMacからP0へ転送する。この設定はP1のVLANアドレスを
+転送先とし、公開APIを3パスへ限定している。秘密鍵はこの時点では含まれない。
+
+\begin{command}
+scp Server/P0/progs/texnote-p0.nginx \
+  mat@192.168.20.10:/home/mat/
+\end{command}
+
+P0上で配置する。
+
+\begin{command}
+sudo install -o root -g root -m 644 \
+  /home/mat/texnote-p0.nginx \
+  /etc/nginx/sites-available/texnote-p0
+\end{command}
+
+配置後、\texttt{location = /login}、\texttt{location = /me}、
+\texttt{location = /compile}だけに\texttt{proxy\_pass}があり、
+\texttt{location /}が404を返すことを確認する。
+
+設定名を有効化する。
+
+\begin{command}
+sudo ln -s \
+  /etc/nginx/sites-available/texnote-p0 \
+  /etc/nginx/sites-enabled/texnote-p0
+sudo unlink /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+\end{command}
+
+\subsection{P1の待受アドレスをVLAN側へ変更}
+
+P1の\texttt{tex-auth.service}を編集する。
+
+\begin{command}
+ExecStart=/home/mat/tex-auth/.auth-env/bin/uvicorn main:app --host 192.168.30.10 --port 8000
+\end{command}
+
+P1のUFWに以前追加した8000番の全面拒否を削除し、P0だけを許可する。番号は実機で確認する。
+
+\begin{command}
+sudo ufw status numbered
+sudo ufw delete <8000/tcp全面拒否規則の番号>
+sudo ufw allow from 192.168.20.10 to any port 8000 proto tcp
+sudo ufw status numbered
+\end{command}
+
+systemd設定を反映する。
+
+\begin{command}
+sudo systemctl daemon-reload
+sudo systemctl restart tex-auth.service
+systemctl status tex-auth.service --no-pager -l
+sudo ss -ltnp | grep ':8000'
+\end{command}
+
+\subsection{P2の接続制限}
+
+P2はP1からのTCP 8000だけを許可する。
+
+\begin{command}
+sudo apt install ufw
+sudo ufw allow from 192.168.99.0/24 to any port 22 proto tcp
+sudo ufw allow from 192.168.30.10 to any port 8000 proto tcp
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw enable
+sudo ufw status verbose
+\end{command}
+
+P1の環境ファイルでP2の新アドレスを設定する。
+
+\begin{command}
+TEXNOTE_P2_TYPESET_URL=http://192.168.40.10:8000/v1/typeset
+\end{command}
+
+P1を再起動する。
+
+\begin{command}
+sudo systemctl restart tex-auth.service
+\end{command}
+
+\subsection{P0経由のLAN試験}
+
+管理用Macから、P0が公開対象外のパスを拒否することを先に確認する。
+
+\begin{command}
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  http://192.168.20.10/openapi.json)" = 404
+test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  http://192.168.20.10/compile-test)" = 404
+\end{command}
+
+続いてP0経由でログイン、\texttt{/me}、実際の画像付き\texttt{/compile}を確認する。
+\texttt{/compile-test}によるP1--P2間の保守確認が必要な場合はP1へSSH接続し、
+P1自身の\texttt{127.0.0.1:8000/compile-test}を使用する。P0からP2へ直接接続できず、
+P0からP1のTCP 8000だけへ接続できることも確認する。
+
+\section{段階2：HTTPSと外部公開}
+
+\subsection{公開前提}
+
+HTTPS証明書を取得するには、通常は所有するドメイン名、DNS設定、外部からP0へ到達できる
+経路が必要である。契約回線がCGNATの場合は通常のポート転送が使えないことがあるため、
+公開前に確認する。
+
+ルーターの転送はTCP 443だけとする。
+
+\begin{command}
+Internet TCP 443 -> P0 192.168.20.10 TCP 443
+\end{command}
+
+TCP 22、80、8000を恒常的にインターネットへ転送しない。
+
+\subsection{証明書取得}
+
+ドメインとDNSを準備した後、P0へCertbotのNginx連携を導入する例を示す。
+
+\begin{command}
+sudo apt update
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d texnote.example.com
+\end{command}
+
+\texttt{texnote.example.com}は実際のドメインへ置き換える。取得後に自動更新を確認する。
+
+\begin{command}
+systemctl status certbot.timer --no-pager
+sudo certbot renew --dry-run
+sudo nginx -t
+\end{command}
+
+TeXNoteのP1 URLをHTTPSへ変更する。
+
+\begin{command}
+https://texnote.example.com
+\end{command}
+
+\section{P0移行後の切戻し}
+
+P0またはVLANで問題が発生した場合、外部公開を停止してLAN内のP1 Nginxへ戻す。
+
+\begin{enumerate}
+  \item ルーターのTCP 443転送を停止する。
+  \item P0 Nginxを停止する。
+  \item P1 Uvicornを\texttt{127.0.0.1:8000}へ戻す。
+  \item P1上のNginxを再度有効化する。
+  \item TeXNoteの接続先をP1のLAN URLへ戻す。
+\end{enumerate}
+
+\begin{command}
+# P0
+sudo systemctl stop nginx
+
+# P1
+sudoedit /etc/systemd/system/tex-auth.service
+# ExecStartのhostを127.0.0.1へ戻す
+sudo systemctl daemon-reload
+sudo systemctl restart tex-auth.service
+sudo systemctl enable --now nginx
+sudo nginx -t
+\end{command}
+
+\section{完了チェックリスト}
+
+\subsection{段階1：P1上のリバースプロキシ}
+
+\begin{itemize}
+  \item[$\square$] Nginxがenabledかつactiveである。
+  \item[$\square$] Nginxの要求上限が32 MiBである。
+  \item[$\square$] P1 Uvicornが\texttt{127.0.0.1:8000}だけで待ち受けている。
+  \item[$\square$] LANからTCP 8000へ直接接続できない。
+  \item[$\square$] Nginx経由でlogin、me、compileが成功する。
+  \item[$\square$] UFW有効化後も新しいSSH接続が成功する。
+  \item[$\square$] P1再起動後もNginxとP1が自動復旧する。
+\end{itemize}
+
+\subsection{段階2：P0とVLAN}
+
+\begin{itemize}
+  \item[$\square$] P0、P1、P2、管理用端末が別VLANへ分離された。
+  \item[$\square$] P0からP1のTCP 8000だけが許可された。
+  \item[$\square$] P1からP2のTCP 8000だけが許可された。
+  \item[$\square$] P0からP2へ直接接続できない。
+  \item[$\square$] インターネットへ公開されるのはP0のTCP 443だけである。
+  \item[$\square$] SSHは管理VLANからだけ許可される。
+  \item[$\square$] IPv6にも同等の制限がある、またはサーバーVLANで無効化されている。
+  \item[$\square$] HTTPS証明書の自動更新試験が成功した。
+  \item[$\square$] P0、P1、P2再起動後に全経路が自動復旧する。
+  \item[$\square$] 段階1へ戻す切戻し手順を確認した。
+\end{itemize}
+
+\section{まとめ}
+
+最初にP1上でNginxを構築すると、TeXNote、P1 FastAPI、P2 FastAPIの処理を変えずに
+リバースプロキシ経由の動作を確認できる。次にVLAN機器とP0を追加し、Nginxの
+\texttt{proxy\_pass}をlocalhostからP1の内部アドレスへ変更することで、公開境界だけを
+P0へ移せる。安全性を決めるのは機器を分けることだけではなく、P0からP1、P1からP2という
+必要最小限の通信だけをACLと各ホストのUFWで許可することである。
+
+\end{document}

@@ -44,6 +44,8 @@ Xcodeには次の2つのschemeがあります。
 モデル、GRDB、Noteフォルダ、検索、カード編集、PDF表示は同じ共有実装です。
 iPad固有のルート画面とInfo設定だけを `Platform/iPad` に置いています。
 
-`TeXCompilerFactory`も1つだけで、macOSでは`LocalTeXCompiler`を返します。
-iPadOSでは将来のリモート版組実装を差し込む構造で、現時点では編集内容の保存後に
-「版組サーバーはまだ設定されていません」とエラータブへ表示します。
+`TeXCompilerFactory`はプラットフォームごとの実装を持ちます。macOSでは設定により
+MacTeXを使うローカル版組と、P1認証サーバー経由のリモート版組を選択できます。
+iPad版・iPhone版はP1へメールアドレスとパスワードでログインし、P1が発行した
+ユーザーJWTを使って`POST /compile`を呼びます。P1は内部トークンを付けてP2の
+TeXコンパイルAPIへ中継するため、アプリはP2へ直接接続しません。

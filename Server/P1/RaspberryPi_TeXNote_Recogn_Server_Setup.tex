@@ -1,0 +1,1233 @@
+\documentclass[uplatex,dvipdfmx,a4paper,11pt]{jsarticle}
+\usepackage[margin=22mm]{geometry}
+\usepackage[dvipdfmx]{hyperref,xcolor}
+\usepackage{fvextra,enumitem,longtable,booktabs}
+\usepackage{listings,jlisting}
+\usepackage{fvextra,enumitem,longtable,booktabs,amssymb}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!65!black,
+pdftitle={Raspberry Pi TeXNote P1認証サーバー構築手順}}
+\definecolor{commandbg}{RGB}{244,246,248}
+\DefineVerbatimEnvironment{command}{Verbatim}{fontsize=\small,frame=single,
+rulecolor=\color{gray!55},breaklines=true,breakanywhere=true}
+\lstset{
+  language=Python,
+  backgroundcolor=\color[gray]{.95},
+  breaklines=true,
+  breakindent=10pt,
+  basicstyle=\ttfamily\scriptsize,
+  commentstyle=\itshape\color[rgb]{0,0.45,0},
+  keywordstyle=\bfseries\color[rgb]{0.55,0,0.55},
+  stringstyle=\color[rgb]{0,0,0.75},
+  frame=single,
+  framesep=5pt,
+  numbers=left,
+  numberstyle=\tiny,
+  stepnumber=1,
+  tabsize=4,
+  showstringspaces=false,
+  captionpos=t
+}
+\setlist{nosep}
+\title{Raspberry Pi TeXNote P1認証サーバー構築手順\\
+\large ユーザー登録からJWT認証、P2中継、利用制限まで}
+\author{}
+\date{2026年8月23日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本書は、Raspberry Pi上で実際に行ったP1認証サーバーの構築・動作確認記録と、
+\texttt{Server/P1/progs}に保存された現行ソースを一つにまとめた再構築手順書である。
+SQLiteとArgon2によるユーザー認証、HS256 JWT、保護API、P2 TeXサーバーへの中継、
+利用履歴、プラン別月間回数制限を扱う。掲載する現行ソースは文書コンパイル時に
+実ファイルから直接取り込むため、説明とソースの食い違いを確認しやすい。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{構成と設計方針}
+
+\subsection{2台のRaspberry Piの役割}
+
+\begin{longtable}{@{}p{18mm}p{37mm}p{50mm}p{45mm}@{}}
+\toprule
+機器 & 記録上のアドレス & 役割 & 主なAPI\\
+\midrule
+P1 & \texttt{192.168.3.21} & 外部向け認証・API中継 & \texttt{/login}, \texttt{/me}, \texttt{/compile}\\
+P2 & \texttt{192.168.3.4:8000} & 内部TeXコンパイル & \texttt{/health}, \texttt{/v1/auth-check}, \texttt{/v1/typeset}\\
+\bottomrule
+\end{longtable}
+
+外部ユーザーはP1だけへ接続し、P2へ直接アクセスしない。P1はユーザーJWTを検証し、
+プランと利用回数を確認した後、P1--P2専用固定トークンを付けてP2へ中継する。
+
+\begin{command}
+User -- email/password --> P1 /login
+User <-- USER_JWT -------- P1
+
+User -- Bearer USER_JWT --> P1 /compile
+                              | user/status/plan/usageを確認
+                              | Bearer TEXNOTE_API_TOKEN
+                              v
+                         P2 /v1/typeset
+                              |
+                              v
+User <-- PDF Base64 + log -- P1
+\end{command}
+
+\subsection{2種類の秘密値}
+
+\begin{longtable}{@{}p{43mm}p{42mm}p{65mm}@{}}
+\toprule
+環境変数 & 使用区間 & 用途\\
+\midrule
+\texttt{TEX\_AUTH\_SECRET\_KEY} & User--P1 & JWTの署名・検証\\
+\texttt{TEXNOTE\_API\_TOKEN} & P1--P2 & P2内部APIのBearer認証\\
+\bottomrule
+\end{longtable}
+
+両者を同じ値にしない。秘密値の実値、ユーザーパスワード、発行済みJWT、DB本体を
+Gitへ保存しない。
+
+\section{Raspberry Piの準備}
+
+\subsection{P1への接続と状態確認}
+
+Macから、実際の操作記録で使用したP1へSSH接続する。
+
+\begin{command}
+ssh mat@192.168.3.21
+\end{command}
+
+P1上でOS、CPU、ストレージ、時刻、更新状態を確認する。
+
+\begin{command}
+cat /etc/os-release
+uname -m
+df -h
+hostname -I
+tr -d '\0' </proc/device-tree/model; echo
+free -h
+hostnamectl
+timedatectl
+sudo apt update
+apt list --upgradable
+test -f /var/run/reboot-required \
+  && cat /var/run/reboot-required \
+  || echo "再起動は要求されていません"
+\end{command}
+
+必要な場合だけ更新して再起動する。
+
+\begin{command}
+sudo apt full-upgrade
+sudo reboot
+\end{command}
+
+P1とP2のIPが変わると接続できなくなるため、ルーターのDHCP予約を設定する。
+
+\subsection{Python環境}
+
+実際の作業ディレクトリ\texttt{\~{}/tex-auth}と仮想環境\texttt{.auth-env}を作る。
+
+\begin{command}
+sudo apt install python3 python3-venv sqlite3
+mkdir -p ~/tex-auth
+cd ~/tex-auth
+python3 -m venv .auth-env
+source .auth-env/bin/activate
+python -m pip install --upgrade pip
+python -m pip install \
+  fastapi \
+  'uvicorn[standard]' \
+  pyjwt \
+  argon2-cffi \
+  requests
+\end{command}
+
+動作確認した依存バージョンを保存する。
+
+\begin{command}
+python -m pip freeze > requirements.txt
+\end{command}
+
+\section{SQLiteデータベースの作成}
+
+\subsection{現行ファイル構成}
+
+\begin{command}
+tex-auth/
+|-- database.py
+|-- auth.py
+|-- plans.py
+|-- main.py
+|-- tools/
+|   |-- __init__.py
+|   |-- init_db.py
+|   |-- useradd.py
+|   |-- change_plan.py
+|   |-- check01.py
+|   |-- check02.py
+|   `-- show_usage.py
+`-- tex_service.db       # init_db.py実行後に生成
+\end{command}
+
+\texttt{tex\_service.db}は認証情報を含む実データであり、Gitや一般公開する文書へ
+含めない。ルート直下の4つのPythonファイルがサーバー運転用であり、\texttt{tools}は
+初期構築・管理・確認時だけ使用する。
+
+\subsection{テーブル設計}
+
+\begin{longtable}{@{}p{27mm}p{53mm}p{70mm}@{}}
+\toprule
+表 & 主な列 & 目的\\
+\midrule
+\texttt{users} & id, email, password\_hash, status, plan, created\_at & ユーザー認証とプラン\\
+\texttt{api\_keys} & id, user\_id, key\_hash, created\_at, revoked\_at & 将来の利用者別APIキー\\
+\texttt{usage} & id, user\_id, created\_at, compile\_seconds, input\_bytes, success & 利用履歴と月間集計\\
+\bottomrule
+\end{longtable}
+
+\subsection{init\_db.py}
+
+\texttt{tools/init\_db.py}の現行ソース全文をリスト\ref{src:init-db}に示す。
+
+\lstinputlisting[caption={tools/init\_db.py：データベース初期化},label={src:init-db}]{progs/tools/init_db.py}
+
+\texttt{database.py}の\texttt{DB\_PATH}を共用するため、初期化と運転時で同じDBを
+確実に参照する。保守ツールは\texttt{\~{}/tex-auth}からモジュールとして実行する。
+
+初期化し、表を確認する。
+
+\begin{command}
+cd ~/tex-auth
+python -m tools.init_db
+sqlite3 tex_service.db '.tables'
+sqlite3 tex_service.db '.schema'
+chmod 600 tex_service.db
+\end{command}
+
+\subsection{database.py}
+
+現行の\texttt{database.py}全文をリスト\ref{src:database}に示す。
+
+\lstinputlisting[caption={database.py：SQLite接続},label={src:database}]{progs/database.py}
+
+\texttt{Path(\_\_file\_\_).parent}を基準にするため、起動ディレクトリに依存せず同じDBを
+開ける。\texttt{sqlite3.Row}で列名アクセスを可能にし、接続ごとに外部キー制約を有効にする。
+\texttt{get\_connection()}はコンテキストマネージャーであり、正常時のコミット、例外時の
+ロールバック、最後の接続クローズを一箇所で保証する。
+
+\subsection{plans.py}
+
+利用可能なplanと月間上限をリスト\ref{src:plans}の一箇所で定義する。
+
+\lstinputlisting[caption={plans.py：利用プランと月間上限},label={src:plans}]{progs/plans.py}
+
+\texttt{main.py}の上限判定、ユーザー登録、プラン変更は同じ定義を参照する。
+入力値は前後の空白を除去して小文字化し、\texttt{free}、\texttt{standard}、
+\texttt{pro}以外をDBへ保存しない。
+
+\section{ユーザー登録とパスワード認証}
+
+\subsection{auth.py}
+
+現行の\texttt{auth.py}全文をリスト\ref{src:auth}に示す。
+
+\lstinputlisting[caption={auth.py：Argon2ユーザー認証},label={src:auth}]{progs/auth.py}
+
+平文パスワードをDBへ保存せず、Argon2ハッシュだけを保存する。認証時はemail検索、
+ユーザー存在、\texttt{status == active}、Argon2照合を順に確認する。SQLには必ず
+\texttt{?}プレースホルダーを用い、入力値を文字列連結しない。
+
+\subsection{useradd.py}
+
+現行ソース全文を示す。
+
+\lstinputlisting[caption={tools/useradd.py：対話式ユーザー登録},label={src:useradd}]{progs/tools/useradd.py}
+
+現行版はメールアドレスとplanを標準入力、パスワードを\texttt{getpass}で2回入力する。
+パスワードは画面、ソースコード、シェル履歴へ残らない。重複メールや入力不一致も
+明示的なメッセージで終了する。
+
+\begin{command}
+cd ~/tex-auth
+source .auth-env/bin/activate
+python -m tools.useradd
+\end{command}
+
+同じメールアドレスにはUNIQUE制約があるため、同じDBで再実行すると登録エラーになる。
+未定義planを入力した場合も登録せず、許可されたplanを表示して終了する。
+
+\subsection{change\_plan.py}
+
+既存ユーザーのplanは管理者用コマンドで変更する。現行ソース全文を示す。
+
+\lstinputlisting[caption={tools/change\_plan.py：既存ユーザーのプラン変更},label={src:change-plan}]{progs/tools/change_plan.py}
+
+P1上の運転用ディレクトリで、メールアドレスと変更先planを指定する。
+
+\begin{command}
+cd ~/tex-auth
+source .auth-env/bin/activate
+python -m tools.change_plan user@example.com standard
+python -m tools.check02 user@example.com
+\end{command}
+
+変更先は\texttt{free}、\texttt{standard}、\texttt{pro}のいずれかに限定される。
+ユーザーが存在しない場合は更新せずエラー終了する。成功時は変更前と変更後のplanを表示し、
+続けて\texttt{check02}でDBの結果を確認する。
+
+\subsection{check01.pyとcheck02.py}
+
+\texttt{check01.py}はusers表の一覧、\texttt{check02.py}は指定したテストユーザーを
+列名アクセスで確認する補助スクリプトである。現行ソースを示す。
+
+\lstinputlisting[caption={tools/check01.py：ユーザー一覧確認},label={src:check01}]{progs/tools/check01.py}
+
+\lstinputlisting[caption={tools/check02.py：指定ユーザー確認},label={src:check02}]{progs/tools/check02.py}
+
+\texttt{check02.py}は確認するメールアドレスをコマンド引数で受け取る。
+
+\begin{command}
+cd ~/tex-auth
+python -m tools.check01
+python -m tools.check02 test@example.com
+\end{command}
+
+パスワード照合は後述の\texttt{POST /login}で、正しい値と誤った値の両方を試験する。
+
+\section{JWTとFastAPI公開API}
+
+\subsection{環境変数}
+
+JWT署名鍵を生成し、P2と共有する内部トークンをP1へ設定する。
+
+\begin{command}
+export TEX_AUTH_SECRET_KEY="$(python3 -c \
+  'import secrets; print(secrets.token_hex(32))')"
+export TEXNOTE_API_TOKEN='<P2に設定したものと同じ内部トークン>'
+# P2のアドレスを変更する場合だけ設定する
+# export TEXNOTE_P2_TYPESET_URL='http://192.168.3.4:8000/v1/typeset'
+\end{command}
+
+\texttt{\$(...)}はコマンド置換であり、Pythonが出力したランダム文字列を環境変数へ
+代入する。確認時も秘密値そのものを画面共有やログへ残さない。
+
+\subsection{main.pyの構成}
+
+現行の\texttt{main.py}全文をリスト\ref{src:main}に示す。このファイルにはJWT、
+\texttt{/login}、\texttt{/me}、\texttt{/compile-test}、\texttt{/compile}、usage記録、
+月間制限が実装されている。
+
+\lstinputlisting[caption={main.py：P1 FastAPI現行実装},label={src:main}]{progs/main.py}
+
+主要な設定は次のとおりである。
+
+\begin{longtable}{@{}p{48mm}p{102mm}@{}}
+\toprule
+設定 & 現行値・意味\\
+\midrule
+JWT方式 & HS256\\
+JWT有効期限 & 30分\\
+JWT claim & sub, email, iat, exp\\
+P2 URL & \texttt{TEXNOTE\_P2\_TYPESET\_URL}。未設定時は\texttt{http://192.168.3.4:8000/v1/typeset}\\
+P2 HTTP timeout & 30秒\\
+HTTPリクエスト上限 & 32 MiB（33,554,432 bytes）\\
+月間上限 & free 50、standard 1000、pro 5000\\
+\bottomrule
+\end{longtable}
+
+P1は\texttt{Content-Length}を確認し、32 MiBを超える要求をPydanticによる解析や
+P2への転送より前にHTTP 413で拒否する。不正な\texttt{Content-Length}はHTTP 400とする。
+上限超過時にTeXNoteへ返すメッセージは次のとおりである。
+
+\begin{command}
+リクエストの上限32 MiBを超えています。
+\end{command}
+
+\subsection{起動}
+
+\begin{command}
+cd ~/tex-auth
+source .auth-env/bin/activate
+uvicorn main:app --host 0.0.0.0 --port 8000
+\end{command}
+
+正常時は\texttt{Uvicorn running on http://0.0.0.0:8000}と表示される。
+終了はCtrl-Cで行う。開発中は\texttt{http://P1-IP:8000/docs}のSwagger UIも利用できる。
+
+\section{ログインと保護APIの試験}
+
+\subsection{POST /login}
+
+\begin{command}
+curl -sS -X POST http://127.0.0.1:8000/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "email": "test@example.com",
+    "password": "<登録したパスワード>"
+  }'
+\end{command}
+
+成功時は次の形式でJWTが返る。
+
+\begin{command}
+{"access_token":"eyJ...","token_type":"bearer"}
+\end{command}
+
+実際の操作記録では成功応答と、誤ったパスワードに対する401
+\texttt{Invalid email or password}の両方を確認した。JWT実値は文書へ保存しない。
+
+\subsection{GET /me}
+
+\begin{command}
+curl -sS http://127.0.0.1:8000/me \
+  -H 'Authorization: Bearer <USER_JWT>'
+\end{command}
+
+\begin{command}
+{"id":1,"email":"test@example.com","plan":"free","status":"active","used":0,"limit":50}
+\end{command}
+
+偽JWT、期限切れJWT、Bearerヘッダーなしも試し、拒否されることを確認する。
+\texttt{get\_current\_user()}はJWTを検証した後にusers表を再検索するため、ユーザーを
+inactiveにすれば発行済みJWTの期限内でもアクセスを停止できる。
+
+\section{P2との疎通と内部認証}
+
+\subsection{ネットワークとヘルスチェック}
+
+P1上で実行する。
+
+\begin{command}
+curl -sS http://192.168.3.4:8000/health
+\end{command}
+
+\begin{command}
+{
+  "status": "ok",
+  "engines": [
+    "lualatex", "xelatex", "pdflatex", "uplatex", "platex"
+  ]
+}
+\end{command}
+
+\subsection{P1--P2固定トークン}
+
+\begin{command}
+curl -sS http://192.168.3.4:8000/v1/auth-check \
+  -H "Authorization: Bearer $TEXNOTE_API_TOKEN"
+\end{command}
+
+\texttt{"status":"ok"}が返れば、LAN経路と内部トークンが正しい。USER\_JWTをここで
+使わず、逆に\texttt{TEXNOTE\_API\_TOKEN}をユーザーへ渡さない。
+
+\section{コンパイル中継の段階的試験}
+
+\subsection{認証だけのcompile-test}
+
+構築途中では、最初に次の最小実装で保護APIだけを確認した。
+
+\begin{lstlisting}[caption={認証だけを確認する初期compile-test}]
+@app.post("/compile-test")
+def compile_test(user=Depends(get_current_user)):
+    return {
+        "message": "compile allowed",
+        "user_id": user["id"]
+    }
+\end{lstlisting}
+
+JWTありで成功し、Bearerなし・偽JWTで拒否されることを確認してからP2中継を追加した。
+
+\subsection{現行compile-test}
+
+現行版は固定の最小LuaLaTeXソースをP2へ送る。P1のJWT認証、P1--P2内部認証、
+P2版組を一度に確認できる。
+
+\begin{command}
+curl -sS -X POST http://127.0.0.1:8000/compile-test \
+  -H 'Authorization: Bearer <USER_JWT>'
+\end{command}
+
+実際の試験では\texttt{compile succeeded}、\texttt{pdf\_received: true}、P2ログの
+\texttt{Output written on main.pdf}を確認した。
+
+\subsection{POST /compile}
+
+\begin{command}
+curl -sS -X POST http://127.0.0.1:8000/compile \
+  -H 'Authorization: Bearer <USER_JWT>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "engine": "lualatex",
+    "source": "\\documentclass{article}\\begin{document}Hello\\end{document}",
+    "pictures": [],
+    "files": []
+  }'
+\end{command}
+
+添付要素の形式は次のとおりである。
+
+\begin{command}
+{
+  "relativePath": "images/example.png",
+  "data": "<BASE64_DATA>"
+}
+\end{command}
+
+P1はcardIDをUUIDで生成し、P2の\texttt{/v1/typeset}用JSONへ変換する。成功時は
+\texttt{user\_id}、\texttt{pdfBase64}、\texttt{log}を返す。実際の試験ではP2の
+LuaLaTeXが1ページのPDFを生成し、Base64がP1経由で返るところまで確認済みである。
+
+\subsection{P2エラー詳細の中継}
+
+P2が非200応答を返した場合、P1はP2独自形式の\texttt{message}またはFastAPI標準形式の
+\texttt{detail}から本文だけを取り出す。P1はHTTP 502の\texttt{detail}へ
+\texttt{message}、\texttt{p2\_status}、\texttt{p2\_detail}を格納してTeXNoteへ返す。
+TeXNote側は\texttt{p2\_detail}を優先表示するため、JSONの外枠は表示されず、文字列中の
+\verb|\n|は実際の改行になる。これにより、P2が返したTeXログの
+ファイル名、行番号、エラー内容をiPad版・iPhone版・macOS版で確認できる。
+
+\section{利用履歴と月間回数制限}
+
+\texttt{record\_usage()}はP2要求の経過時間、TeX sourceのUTF-8バイト数、成功・失敗を
+usage表へ記録する。P2への接続失敗とP2の非200応答も失敗履歴として残す。
+現在のinput\_bytesにはpictures/filesのデータ量を含まない。
+
+現行の\texttt{show\_usage.py}全文を示す。
+
+\lstinputlisting[caption={tools/show\_usage.py：利用履歴確認},label={src:usage}]{progs/tools/show_usage.py}
+
+\begin{command}
+cd ~/tex-auth
+source .auth-env/bin/activate
+python -m tools.show_usage
+\end{command}
+
+\begin{longtable}{@{}lr@{}}
+\toprule
+plan & 月間要求回数\\
+\midrule
+free & 50\\
+standard & 1000\\
+pro & 5000\\
+\bottomrule
+\end{longtable}
+
+新規登録と管理コマンドは未定義planを拒否する。既存DBに未定義planが残っている場合だけ
+安全側としてfreeの上限を適用する。成功・失敗を問わずusageの1行を1要求として数え、
+上限以上ならP2へ送る前にHTTP 429を返す。
+
+\section{現行ソースを配置する方法}
+
+リポジトリからP1へ転送する例を示す。秘密値とDBはこの操作に含めない。
+
+\begin{command}
+# MacのTeXNoteリポジトリ直下で実行
+scp Server/P1/progs/main.py \
+    Server/P1/progs/auth.py \
+    Server/P1/progs/database.py \
+    Server/P1/progs/plans.py \
+    mat@192.168.3.21:/home/mat/tex-auth/
+
+scp -r Server/P1/progs/tools \
+    mat@192.168.3.21:/home/mat/tex-auth/
+\end{command}
+
+P1上で構文を確認する。\texttt{main.py}のimportには両環境変数が必要である。
+
+\begin{command}
+cd ~/tex-auth
+source .auth-env/bin/activate
+python -m py_compile *.py tools/*.py
+\end{command}
+
+\section{ソース整理で改善した点と残る課題}
+
+\subsection{main.pyの整理と修正}
+
+現行\texttt{main.py}は、設定、入出力モデル、JWT、利用制限、P2通信、公開APIの順に
+構成を整理した。P2通信の重複を\texttt{send\_typeset\_request()}へ集約し、各関数へ
+型注釈、docstring、日本語コメントを追加した。また、次の点を修正している。
+
+\begin{itemize}
+  \item SQLiteで無効だった\texttt{\# AND success = 1}を月間集計SQLから削除した。
+  \item pictures/filesの既定値を\texttt{Field(default\_factory=list)}へ変更した。
+  \item engineをP2が対応する5種類の\texttt{Literal}へ制限した。
+  \item JWTのsubが欠落または整数変換不能の場合も401として処理する。
+  \item P2の不正JSONと想定外のJSON型を502として処理する。
+  \item P1入口のHTTPリクエストを32 MiBへ制限した。
+  \item P2の\texttt{message}/\texttt{detail}を抽出し、\texttt{p2\_detail}として中継する。
+  \item P2 URLを環境変数で上書き可能にした。
+  \item 成功・失敗のusage記録を\texttt{finally}で一箇所に集約した。
+\end{itemize}
+
+\subsection{その他のPythonソースの整理}
+
+\texttt{database.py}、\texttt{auth.py}、\texttt{plans.py}、\texttt{tools}配下も
+\texttt{main.py}と同じ
+書式へ統一した。各ファイルにモジュール説明、各関数にdocstringと型注釈、判断理由を
+示す日本語コメントを追加し、変数名を\texttt{con}や\texttt{row}から役割が分かる名前へ
+変更した。主な改善点は次のとおりである。
+
+\begin{itemize}
+  \item DB接続をコンテキストマネージャー化し、処理後に必ず閉じる。
+  \item useraddの入力処理と登録処理を関数へ分離する。
+  \item plan名と月間上限をplans.pyへ集約し、未定義planの登録を拒否する。
+  \item change\_planで既存ユーザーのplanを検証して変更する。
+  \item check01/check02のDB検索を再利用可能な関数へ分離する。
+  \item show\_usageの履歴取得、月間集計、表示処理を分離する。
+  \item init\_dbの各テーブルについて用途をコメントで説明する。
+\end{itemize}
+
+\subsection{運転用と保守用の分離}
+
+サーバー運転に必要な\texttt{main.py}、\texttt{auth.py}、\texttt{database.py}、
+\texttt{plans.py}はルートへ、DB初期化、ユーザー追加、プラン変更、DB確認、
+利用履歴表示は\texttt{tools}へ分離した。
+保守ツールは\texttt{python -m tools.コマンド名}でのみ明示的に実行し、Uvicornの運転には
+読み込まれない。DB本体は引き続きGitへ入れない。
+
+\subsection{公開前に追加する制限}
+
+\begin{itemize}
+  \item source文字数、添付数、Base64サイズ、相対パスを検証する。
+  \item P1の同時実行数とログイン試行回数を制限する。
+  \item P2の詳細エラーとTeXログを外部へ返す範囲を見直す。
+  \item usageのDB書き込み失敗をAPI本体のエラーと分けて監視する。
+\end{itemize}
+
+\section{systemdによる常時起動}
+
+P1は、Raspberry Piの起動時に自動的に立ち上がるようsystemdへ登録する。
+現行構成では、プログラムを\texttt{/home/mat/tex-auth}、Python仮想環境を
+\texttt{/home/mat/tex-auth/.auth-env}へ配置し、\texttt{mat}ユーザーでUvicornを実行する。
+
+\subsection{Python環境の確認}
+
+systemdへ登録する前に仮想環境を有効化し、P1が必要とするパッケージを確認する。
+
+\begin{command}
+cd /home/mat/tex-auth
+source .auth-env/bin/activate
+python -m pip show fastapi uvicorn pyjwt argon2-cffi requests
+\end{command}
+
+実際の確認時には、FastAPI 0.141.1、Uvicorn 0.52.3、PyJWT 2.13.0、
+argon2-cffi 25.1.0、requests 2.34.2が仮想環境内に導入されていた。
+各パッケージの\texttt{Location}が
+\path{/home/mat/tex-auth/.auth-env/lib/python3.11/site-packages}以下を指すことも確認する。
+
+次に、systemdが使用するUvicornの実体を確認する。
+
+\begin{command}
+ls -l /home/mat/tex-auth/.auth-env/bin/uvicorn
+\end{command}
+
+\subsection{手動起動の確認}
+
+systemdの問題とアプリケーション自身の問題を区別できるよう、最初に同じ仮想環境から
+手動起動を確認する。秘密値は実際の値へ置き換える。
+
+\begin{command}
+cd /home/mat/tex-auth
+source .auth-env/bin/activate
+export TEX_AUTH_SECRET_KEY='<JWT署名鍵>'
+export TEXNOTE_API_TOKEN='<P2と共通の内部トークン>'
+export TEXNOTE_P2_TYPESET_URL='http://192.168.3.4:8000/v1/typeset'
+uvicorn main:app --host 0.0.0.0 --port 8000
+\end{command}
+
+\texttt{Application startup complete.}および
+\texttt{Uvicorn running on http://0.0.0.0:8000}が表示されたら、別の端末から応答を確認する。
+
+\begin{command}
+curl -I http://127.0.0.1:8000/docs
+\end{command}
+
+確認後は\texttt{Ctrl+C}で手動起動したUvicornを停止する。
+
+\subsection{配置と権限の確認}
+
+P1は\texttt{mat}ユーザーで動かすため、プログラムとSQLite DBを同ユーザーが扱えるようにする。
+
+\begin{command}
+sudo chown -R mat:mat /home/mat/tex-auth
+chmod 700 /home/mat/tex-auth
+chmod 600 /home/mat/tex-auth/tex_service.db
+\end{command}
+
+\subsection{秘密値ファイルの作成}
+
+秘密値はPythonソースやsystemdサービスファイルへ直接書かず、rootだけが読み書きできる
+環境ファイルへ保存する。
+
+\begin{command}
+sudo install -o root -g root -m 600 /dev/null /etc/tex-auth.env
+sudoedit /etc/tex-auth.env
+\end{command}
+
+内容は次のとおりである。\texttt{TEXNOTE\_API\_TOKEN}にはP2と同じ内部トークンを設定し、
+\texttt{TEX\_AUTH\_SECRET\_KEY}とは必ず別の値にする。
+
+\begin{command}
+TEX_AUTH_SECRET_KEY=<JWT署名鍵>
+TEXNOTE_API_TOKEN=<P2内部トークン>
+TEXNOTE_P2_TYPESET_URL=http://192.168.3.4:8000/v1/typeset
+\end{command}
+
+JWT署名鍵を新しく生成する場合は次のコマンドを使用できる。
+
+\begin{command}
+python3 -c 'import secrets; print(secrets.token_urlsafe(64))'
+\end{command}
+
+環境ファイルが\texttt{root:root}、モード\texttt{600}であることを確認する。
+
+\begin{command}
+sudo ls -l /etc/tex-auth.env
+\end{command}
+
+\subsection{サービスファイルの作成}
+
+\texttt{/etc/systemd/system/tex-auth.service}を作成する。
+
+\begin{command}
+sudoedit /etc/systemd/system/tex-auth.service
+\end{command}
+
+内容は次のとおりである。\texttt{ExecStart}はサービスファイル内では1行で記述する。
+
+\begin{command}
+[Unit]
+Description=TeXNote P1 Authentication API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mat
+Group=mat
+WorkingDirectory=/home/mat/tex-auth
+EnvironmentFile=/etc/tex-auth.env
+ExecStart=/home/mat/tex-auth/.auth-env/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+\end{command}
+
+\subsection{設定検査と自動起動の有効化}
+
+サービスファイルの構文を検査する。問題がなければ通常は何も表示されない。
+
+\begin{command}
+sudo systemd-analyze verify /etc/systemd/system/tex-auth.service
+\end{command}
+
+systemdへ設定を読み込ませ、直ちに起動すると同時にOS起動時の自動起動を有効にする。
+
+\begin{command}
+sudo systemctl daemon-reload
+sudo systemctl enable --now tex-auth.service
+systemctl status tex-auth.service --no-pager -l
+journalctl -u tex-auth.service -n 100 --no-pager
+\end{command}
+
+実際の確認では、\texttt{Loaded}欄が\texttt{enabled}、\texttt{Active}欄が
+\texttt{active (running)}となり、Uvicornの
+\texttt{Application startup complete.}が記録された。
+
+\subsection{APIと再起動後の確認}
+
+P1自身からAPIドキュメントの応答を確認する。
+
+\begin{command}
+curl -I http://127.0.0.1:8000/docs
+\end{command}
+
+最後にRaspberry Piを再起動し、systemdによってP1が自動起動することを確認する。
+
+\begin{command}
+sudo reboot
+\end{command}
+
+再接続後に次を実行する。
+
+\begin{command}
+systemctl is-enabled tex-auth.service
+systemctl is-active tex-auth.service
+systemctl status tex-auth.service --no-pager -l
+\end{command}
+
+先頭2コマンドがそれぞれ\texttt{enabled}、\texttt{active}を返せば、自動起動は正常である。
+
+\subsection{運用時の操作}
+
+ソースを更新した場合はサービスを再起動し、直後のログを確認する。
+
+\begin{command}
+sudo systemctl restart tex-auth.service
+journalctl -u tex-auth.service -n 100 --no-pager
+\end{command}
+
+サービスの起動、停止、再起動には次を使用する。
+
+\begin{command}
+sudo systemctl start tex-auth.service
+sudo systemctl stop tex-auth.service
+sudo systemctl restart tex-auth.service
+\end{command}
+
+環境ファイルまたはサービスファイルを変更した場合は、設定を再読込してから再起動する。
+
+\begin{command}
+sudo systemctl daemon-reload
+sudo systemctl restart tex-auth.service
+\end{command}
+
+\texttt{main.py}は起動時に\texttt{TEX\_AUTH\_SECRET\_KEY}と
+\texttt{TEXNOTE\_API\_TOKEN}を必須取得する。設定漏れや記述誤りがある場合はサービスが
+起動しないため、\texttt{journalctl}で原因を確認する。
+
+\newpage
+\section{Docker版への移行}
+
+ここまでは、P1をホスト上のPython仮想環境からsystemdで起動する構成を説明した。
+本節では、同じP1をDocker Composeで運転する手順を示す。Docker版の検査が完了するまで
+systemd版のプログラム、仮想環境、サービスファイル、DBは削除しない。
+
+\subsection{移行方針}
+
+Docker版は次の構成とする。
+
+\begin{itemize}
+  \item arm64対応の\texttt{python:3.11-slim-bookworm}を使用する。
+  \item 運転用の\texttt{main.py}、\texttt{auth.py}、\texttt{database.py}、
+        \texttt{plans.py}をイメージへ入れる。
+  \item 保守用の\texttt{tools}はDB初期化やユーザー管理のためイメージへ入れるが、常時実行しない。
+  \item JWT署名鍵とP2内部トークンはイメージへ入れず、\texttt{p1.env}から起動時に渡す。
+  \item SQLite DBはホストの\texttt{data}ディレクトリへ保存し、コンテナを作り直しても残す。
+  \item コンテナ内ではrootではなくUID 10001の専用ユーザー\texttt{texauth}で実行する。
+  \item イメージ本体を読み取り専用にし、DB用\texttt{/data}と一時領域\texttt{/tmp}だけを書き込み可能にする。
+  \item systemd版とDocker版は同じTCP 8000を同時に使用しない。
+\end{itemize}
+
+\subsection{SQLite保存先を環境変数化する}
+
+現行の\texttt{database.py}はDBをソースと同じディレクトリへ固定している。
+このままイメージを読み取り専用にすると、SQLiteのDB本体やjournalを書き込めない。
+そこで\texttt{TEX\_AUTH\_DB\_PATH}が設定されている場合だけ、その場所を使用するようにする。
+
+\begin{lstlisting}[caption={Dockerの永続領域へ対応するdatabase.pyのDBパス定義}]
+import os
+from pathlib import Path
+
+DEFAULT_DB_PATH = Path(__file__).resolve().parent / "tex_service.db"
+DB_PATH = Path(os.getenv("TEX_AUTH_DB_PATH", DEFAULT_DB_PATH))
+\end{lstlisting}
+
+既存の\texttt{from pathlib import Path}は残し、\texttt{import os}を追加する。
+既存の\texttt{DB\_PATH}定義は上記2行へ置き換え、同じ役割の定義を重複して残さない。
+systemd版では環境変数を設定しないため、従来どおり
+\texttt{/home/mat/tex-auth/tex\_service.db}を使用する。
+
+\subsection{Docker EngineとComposeの確認}
+
+P2ですでにDockerを使用している場合と同様、P1でもDocker EngineとCompose pluginを使う。
+未導入の場合は本書のP2 Docker版と同じ公式Debian用APTリポジトリから導入する。
+
+\begin{command}
+sudo systemctl is-enabled docker
+sudo systemctl is-active docker
+sudo docker version
+sudo docker compose version
+\end{command}
+
+本手順ではDockerへ実質的なroot権限があることを明示するため、すべて
+\texttt{sudo docker}で実行する。
+
+\subsection{Docker用ディレクトリの準備}
+
+systemd版と混同しないよう、P1上へ別ディレクトリを作成する。
+
+\begin{command}
+mkdir -p /home/mat/tex-auth-docker/data
+chmod 700 /home/mat/tex-auth-docker
+\end{command}
+
+Macから現行ソースを転送する。
+
+\begin{command}
+scp -r /Users/mat/Documents/Git/TeXNote/Server/P1/progs/* \
+  mat@192.168.3.21:/home/mat/tex-auth-docker/
+\end{command}
+
+\texttt{\_\_pycache\_\_}や既存DBはイメージへ入れない。現行DBは停止時に整合した状態で
+コピーするため、この時点ではまだコピーしない。
+
+\subsection{requirements.txtの作成}
+
+\texttt{/home/mat/tex-auth-docker/requirements.txt}を次の内容で作成する。
+実際に仮想環境で確認した直接依存パッケージの版を固定する。
+
+\begin{command}
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+PyJWT==2.13.0
+argon2-cffi==25.1.0
+requests==2.34.2
+\end{command}
+
+\subsection{Dockerfileの作成}
+
+\texttt{/home/mat/tex-auth-docker/Dockerfile}を次の内容で作成する。
+
+\begin{command}
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
+COPY main.py auth.py database.py plans.py ./
+COPY tools ./tools
+
+RUN useradd --system --uid 10001 --create-home texauth \
+    && mkdir -p /data \
+    && chown texauth:texauth /data
+
+USER texauth
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=4)" || exit 1
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+\end{command}
+
+\subsection{秘密情報をビルド対象から除外する}
+
+\texttt{/home/mat/tex-auth-docker/.dockerignore}を作成する。
+
+\begin{command}
+.git
+.DS_Store
+.auth-env
+__pycache__
+*.pyc
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+p1.env
+data
+docs
+out
+\end{command}
+
+これにより、JWT署名鍵、P2内部トークン、ユーザーDB、利用履歴がbuild contextや
+イメージlayerへ入ることを防ぐ。
+
+\subsection{Docker用環境ファイルの作成}
+
+systemd版の秘密値を画面へ表示せず、Docker用環境ファイルへroot権限でコピーする。
+
+\begin{command}
+sudo install -o root -g root -m 600 \
+  /etc/tex-auth.env \
+  /home/mat/tex-auth-docker/p1.env
+sudoedit /home/mat/tex-auth-docker/p1.env
+\end{command}
+
+次の4項目を設定する。最初の2項目はsystemd版と同じ値を使用する。
+
+\begin{command}
+TEX_AUTH_SECRET_KEY=<systemd版と同じJWT署名鍵>
+TEXNOTE_API_TOKEN=<P2と共通の内部トークン>
+TEXNOTE_P2_TYPESET_URL=http://192.168.3.4:8000/v1/typeset
+TEX_AUTH_DB_PATH=/data/tex_service.db
+\end{command}
+
+\subsection{Compose設定の作成}
+
+\texttt{/home/mat/tex-auth-docker/compose.yaml}を作成する。
+P1のLAN側IPが\texttt{192.168.3.21}でない場合は、\texttt{ports}を実機に合わせる。
+
+\begin{command}
+services:
+  tex-auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tex-auth:bookworm
+    restart: unless-stopped
+    env_file:
+      - ./p1.env
+    ports:
+      - "192.168.3.21:8000:8000"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+\end{command}
+
+設定を検査する。引数なしの\texttt{docker compose config}は秘密値を展開表示する可能性が
+あるため使用しない。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+sudo docker compose config --quiet
+\end{command}
+
+\subsection{イメージのビルドと静的検査}
+
+ビルドはsystemd版を動かしたまま実行できる。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+df -h /
+sudo docker compose build
+sudo docker image ls tex-auth:bookworm
+\end{command}
+
+まだポートを公開せず、イメージ内のPython、ファイル、実行ユーザーを確認する。
+
+\begin{command}
+sudo docker compose run --rm --no-deps tex-auth \
+  sh -lc 'python --version; id; ls -l /app'
+\end{command}
+
+\subsection{systemd版DBの移行}
+
+SQLite DBをコピーする間に書き込みが発生しないよう、systemd版を停止する。
+この操作以降、検査が終わるまでP1 APIは一時停止する。
+
+\begin{command}
+sudo systemctl stop tex-auth.service
+systemctl is-active tex-auth.service
+\end{command}
+
+DB本体をDockerの永続領域へコピーし、コンテナ内ユーザーUID 10001が読み書きできるようにする。
+
+\begin{command}
+sudo install -o 10001 -g 10001 -m 600 \
+  /home/mat/tex-auth/tex_service.db \
+  /home/mat/tex-auth-docker/data/tex_service.db
+sudo chown 10001:10001 /home/mat/tex-auth-docker/data
+sudo chmod 700 /home/mat/tex-auth-docker/data
+sudo ls -ln /home/mat/tex-auth-docker/data
+\end{command}
+
+コンテナからDBを開けることと、3表が存在することを確認する。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+sudo docker compose run --rm --no-deps tex-auth \
+  python -m tools.check01
+\end{command}
+
+\subsection{systemd版からDocker版への切替}
+
+systemd版の自動起動を無効にする。サービスファイルと従来のDBは削除しない。
+
+\begin{command}
+sudo systemctl disable tex-auth.service
+systemctl is-enabled tex-auth.service
+\end{command}
+
+Docker版をバックグラウンドで起動する。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+sudo docker compose up -d
+sudo docker compose ps
+sudo docker compose logs --tail=100 tex-auth
+\end{command}
+
+コンテナ状態を確認する。
+
+\begin{command}
+sudo docker compose ps
+sudo docker inspect \
+  --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+  tex-auth-docker-tex-auth-1
+curl --fail-with-body http://127.0.0.1:8000/openapi.json >/dev/null
+\end{command}
+
+Composeのディレクトリ名を変えた場合はコンテナ名も変わる。正確な名前は
+\texttt{sudo docker compose ps}で確認する。
+
+\subsection{認証とP2中継の確認}
+
+登録済みユーザーでログインし、返されたJWTで\texttt{/me}を確認する。
+
+\begin{command}
+curl -sS -X POST http://127.0.0.1:8000/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"<登録済みメール>","password":"<パスワード>"}'
+\end{command}
+
+JWTを端末変数へ設定して確認する。
+
+\begin{command}
+USER_JWT='<loginで返されたaccess_token>'
+curl --fail-with-body http://127.0.0.1:8000/me \
+  -H "Authorization: Bearer $USER_JWT"
+curl --fail-with-body -X POST http://127.0.0.1:8000/compile-test \
+  -H "Authorization: Bearer $USER_JWT"
+unset USER_JWT
+\end{command}
+
+\texttt{/compile-test}が成功すれば、Docker版P1からP2への通信、P2内部トークン、
+P2でのTeXコンパイルまで確認できる。続いてmacOS版、iPad版、iPhone版から実際にログインし、
+任意のCardを版組する。
+
+\subsection{再起動後の自動復旧試験}
+
+DockerサービスとComposeの\texttt{restart: unless-stopped}による自動復旧を確認する。
+
+\begin{command}
+sudo reboot
+\end{command}
+
+再接続後に次を実行する。
+
+\begin{command}
+sudo systemctl is-active docker
+cd /home/mat/tex-auth-docker
+sudo docker compose ps
+curl --fail-with-body http://127.0.0.1:8000/openapi.json >/dev/null
+\end{command}
+
+\subsection{更新と日常運用}
+
+Pythonソースまたは\texttt{requirements.txt}を更新した場合は、ファイルを転送して
+イメージを再ビルドする。単なる\texttt{restart}ではイメージ内のソースは更新されない。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+sudo docker compose config --quiet
+sudo docker compose up -d --build
+sudo docker compose ps
+sudo docker compose logs --tail=100 tex-auth
+\end{command}
+
+日常の状態確認とログ確認には次を使用する。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+sudo docker compose ps
+sudo docker compose logs --tail=100 tex-auth
+sudo docker compose logs -f tex-auth
+sudo docker stats --no-stream
+\end{command}
+
+ログ追跡は\texttt{Ctrl+C}で終了でき、コンテナは停止しない。明示的な停止と再開は次のとおり。
+
+\begin{command}
+sudo docker compose stop
+sudo docker compose start
+\end{command}
+
+\subsection{DBのバックアップ}
+
+整合したバックアップを得るため、SQLiteのbackup APIをコンテナ内から実行する。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+sudo docker compose exec tex-auth python -c \
+  "import sqlite3; src=sqlite3.connect('/data/tex_service.db'); dst=sqlite3.connect('/data/tex_service.backup.db'); src.backup(dst); dst.close(); src.close()"
+sudo cp -p data/tex_service.backup.db \
+  data/tex_service.backup-$(date +%Y%m%d-%H%M%S).db
+\end{command}
+
+バックアップには認証情報と利用履歴が含まれるため、権限600を維持し、Gitへ登録しない。
+
+\subsection{問題発生時にsystemd版へ戻す}
+
+Docker版で問題が発生した場合は、Docker版を停止してからsystemd版へ戻す。
+両方を同時に起動するとTCP 8000が競合する。
+
+Docker版で更新されたDBをsystemd版へ戻す場合は、双方を停止した状態で退避とコピーを行う。
+
+\begin{command}
+cd /home/mat/tex-auth-docker
+sudo docker compose down
+sudo cp -p /home/mat/tex-auth/tex_service.db \
+  /home/mat/tex-auth/tex_service.db.before-docker-restore
+sudo install -o mat -g mat -m 600 \
+  data/tex_service.db \
+  /home/mat/tex-auth/tex_service.db
+sudo systemctl enable --now tex-auth.service
+systemctl is-enabled tex-auth.service
+systemctl is-active tex-auth.service
+curl --fail-with-body http://127.0.0.1:8000/openapi.json >/dev/null
+\end{command}
+
+\subsection{Docker版完了チェックリスト}
+
+\begin{itemize}
+  \item[$\square$] Docker EngineとCompose pluginが動作している。
+  \item[$\square$] \texttt{database.py}が\texttt{TEX\_AUTH\_DB\_PATH}へ対応した。
+  \item[$\square$] \texttt{p1.env}、SQLite DB、バックアップがイメージへ入っていない。
+  \item[$\square$] コンテナがrootではなくUID 10001で動作している。
+  \item[$\square$] systemd版を停止してからDocker版を起動した。
+  \item[$\square$] \texttt{/login}と\texttt{/me}が成功した。
+  \item[$\square$] \texttt{/compile-test}でP2中継とPDF生成を確認した。
+  \item[$\square$] macOS版、iPad版、iPhone版からログインと版組を確認した。
+  \item[$\square$] Raspberry Pi再起動後にコンテナが自動復旧した。
+  \item[$\square$] Docker版DBのバックアップとsystemd版への復旧手順を確認した。
+\end{itemize}
+
+\section{セキュリティと公開前チェック}
+
+\begin{enumerate}
+  \item P2を一般公開せず、P2のファイアウォールはP1からの接続だけを許可する。
+  \item P1でHTTPSを終端し、パスワードとJWTを平文HTTPで送らない。
+  \item 2種類の秘密値を分離し、定期更新と安全な再起動方法を準備する。
+  \item DBとバックアップの権限を制限し、暗号化・復旧試験を行う。
+  \item P2でshell-escapeを禁止し、TeXを低権限・隔離環境で動かす。
+  \item login、JWT期限切れ、inactive、月間上限、P2停止、usage記録を自動テストする。
+\end{enumerate}
+
+\section{再構築時の確認順序}
+
+\begin{enumerate}
+  \item P1のOS、IP、時刻、Python仮想環境を確認する。
+  \item SQLiteの3表を作り、ユーザーを登録してArgon2認証を試す。
+  \item 2つの環境変数を設定する。
+  \item P1からP2のhealthとauth-checkを確認する。
+  \item P1を起動し、login、meを確認する。
+  \item compile-test、次に任意ソースのcompileを確認する。
+  \item show\_usage.pyで成功・失敗履歴を確認する。
+  \item 月間上限、inactive、不正JWT、P2停止時の応答を確認する。
+  \item systemd化し、再起動後も自動起動することを確認する。
+  \item HTTPSとP1/P2のネットワーク制限を適用してから公開する。
+\end{enumerate}
+
+\section{まとめ}
+
+P1は、Argon2ユーザー認証、30分JWT、保護API、P2への固定トークン付き中継、
+PDF Base64応答、利用履歴、月間回数制限を担当する。実際の操作ではユーザー認証、
+login、me、compile-test、実compile、PDF生成まで段階的に確認された。本書の順序で
+小さく確認し、各段階が成功してから次へ進むことで、認証、DB、LAN、P2版組のどこに
+問題があるかを切り分けられる。
+
+\end{document}

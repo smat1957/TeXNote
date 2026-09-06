@@ -2,9 +2,12 @@ import SwiftUI
 
 struct TeXCodeEditor: View {
     @Binding var text: String
+    @Binding var selection: NSRange
     let placeholder: String
-
-    @State private var selection = NSRange(location: 0, length: 0)
+    var showsLineNumbers = false
+    var searchText = ""
+    var searchIsCaseSensitive = false
+    var firstLineNumber = 1
 
     private var completions: [TeXCompletion] {
         TeXSyntaxHighlighting.completions(
@@ -16,13 +19,21 @@ struct TeXCodeEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
-                TeXSourceEditor(text: $text, selection: $selection)
+                TeXSourceEditor(
+                    text: $text,
+                    selection: $selection,
+                    showsLineNumbers: showsLineNumbers,
+                    searchText: searchText,
+                    searchIsCaseSensitive: searchIsCaseSensitive,
+                    firstLineNumber: firstLineNumber
+                )
 
                 if text.isEmpty {
                     Text(placeholder)
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 10)
+                        .padding(.leading, showsLineNumbers ? 48 : 10)
+                        .padding(.trailing, 10)
                         .padding(.vertical, 9)
                         .allowsHitTesting(false)
                 }

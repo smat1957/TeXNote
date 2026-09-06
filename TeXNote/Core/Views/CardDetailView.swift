@@ -1,4 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import PDFKit
+#else
+import UIKit
+#endif
 
 struct CardDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -9,7 +14,7 @@ struct CardDetailView: View {
     let canSelectNextCard: Bool
     let canSelectPreviousCard: Bool
     let editAction: () -> Void
-    let addRelatedAction: () -> Void
+    let exportAction: () -> Void
     let deleteAction: () -> Void
     let nextCardAction: () -> Void
     let previousCardAction: () -> Void
@@ -109,15 +114,41 @@ struct CardDetailView: View {
 
             Spacer()
 
+            cardActionControls
+        }
+    }
+
+    @ViewBuilder
+    private var cardActionControls: some View {
+        if PlatformNoteActionChrome.usesGroupedChrome {
+            PlatformNoteActionGroup {
+                cardActionControlItems
+            }
+        } else {
+            cardActionControlItems
+                .buttonStyle(.borderless)
+        }
+    }
+
+    private var cardActionControlItems: some View {
+        HStack(spacing: PlatformNoteActionChrome.usesGroupedChrome ? 4 : 12) {
             Button("編集", systemImage: "pencil", action: editAction)
                 .labelStyle(.iconOnly)
+                .platformNoteActionControl()
 
             Menu {
                 Group {
                     Button(
-                        "関連記事の追加",
-                        systemImage: "link",
-                        action: addRelatedAction
+                        "印刷",
+                        systemImage: "printer",
+                        action: printPDF
+                    )
+                    .disabled(card.pdfData == nil)
+
+                    Button(
+                        "エクスポート",
+                        systemImage: "square.and.arrow.up",
+                        action: exportAction
                     )
 
                     Divider()
@@ -131,11 +162,34 @@ struct CardDetailView: View {
                 }
                 .labelStyle(.titleAndIcon)
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: PlatformNoteActionSymbols.menu)
                     .accessibilityLabel("Cardメニュー")
             }
+            .platformNoteActionControl()
         }
-        .buttonStyle(.borderless)
+    }
+
+    /// 現在表示中のPDF全ページを各OSの標準印刷画面へ渡す。
+    private func printPDF() {
+        guard let data = card.pdfData else { return }
+#if os(macOS)
+        guard let document = PDFDocument(data: data),
+              let operation = document.printOperation(
+                  for: NSPrintInfo.shared,
+                  scalingMode: .pageScaleToFit,
+                  autoRotate: true
+              ) else { return }
+        operation.run()
+#else
+        let printInfo = UIPrintInfo(dictionary: nil)
+        printInfo.jobName = card.title
+        printInfo.outputType = .general
+
+        let controller = UIPrintInteractionController.shared
+        controller.printInfo = printInfo
+        controller.printingItem = data
+        controller.present(animated: true, completionHandler: nil)
+#endif
     }
 
     private var lastTypesetDateText: String {

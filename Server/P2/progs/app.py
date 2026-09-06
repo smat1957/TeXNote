@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 
-MAX_REQUEST_BYTES = 25 * 1024 * 1024
+MAX_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_SOURCE_CHARACTERS = 2_000_000
 MAX_ASSET_BYTES = 10 * 1024 * 1024
 MAX_TOTAL_ASSET_BYTES = 20 * 1024 * 1024
@@ -38,7 +38,7 @@ app = FastAPI(title="TeXNote Typesetting Server", version="1.0.0")
 class CardAsset(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    fileName: str = Field(min_length=1, max_length=255)
+    relativePath: str = Field(min_length=1, max_length=1024)
     data: str = Field(min_length=1)
 
 
@@ -70,7 +70,9 @@ async def limit_request_size(request: Request, call_next):
             if int(content_length) > MAX_REQUEST_BYTES:
                 return JSONResponse(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    content={"message": "リクエストが大きすぎます。"},
+                    content={
+                        "message": "リクエストの上限32 MiBを超えています。"
+                    },
                 )
         except ValueError:
             return JSONResponse(
@@ -147,33 +149,33 @@ def decode_assets(
     files: list[CardAsset],
 ) -> tuple[list[tuple[str, bytes]], list[tuple[str, bytes]]]:
     total_bytes = 0
+    seen_paths: set[str] = set()
 
     def decode_folder(assets: list[CardAsset]) -> list[tuple[str, bytes]]:
         nonlocal total_bytes
         decoded: list[tuple[str, bytes]] = []
-        seen_names: set[str] = set()
 
         for asset in assets:
-            validate_file_name(asset.fileName)
-            if asset.fileName in seen_names:
+            validate_relative_path(asset.relativePath)
+            if asset.relativePath in seen_paths:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"ファイル名が重複しています: {asset.fileName}",
+                    detail=f"相対パスが重複しています: {asset.relativePath}",
                 )
-            seen_names.add(asset.fileName)
+            seen_paths.add(asset.relativePath)
 
             try:
                 content = base64.b64decode(asset.data, validate=True)
             except (binascii.Error, ValueError) as error:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Base64データが不正です: {asset.fileName}",
+                    detail=f"Base64データが不正です: {asset.relativePath}",
                 ) from error
 
             if len(content) > MAX_ASSET_BYTES:
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"ファイルが大きすぎます: {asset.fileName}",
+                    detail=f"ファイルが大きすぎます: {asset.relativePath}",
                 )
             total_bytes += len(content)
             if total_bytes > MAX_TOTAL_ASSET_BYTES:
@@ -181,24 +183,26 @@ def decode_assets(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail="添付ファイルの合計サイズが大きすぎます。",
                 )
-            decoded.append((asset.fileName, content))
+            decoded.append((asset.relativePath, content))
         return decoded
 
     return decode_folder(pictures), decode_folder(files)
 
 
-def validate_file_name(file_name: str) -> None:
+def validate_relative_path(relative_path: str) -> None:
+    path = Path(relative_path)
     if (
-        file_name in {".", ".."}
-        or file_name.startswith(".")
-        or "/" in file_name
-        or "\\" in file_name
-        or "\x00" in file_name
-        or Path(file_name).name != file_name
+        path.is_absolute()
+        or relative_path.startswith("~")
+        or "\\" in relative_path
+        or "\x00" in relative_path
+        or "//" in relative_path
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.as_posix() != relative_path
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"利用できないファイル名です: {file_name}",
+            detail=f"利用できない相対パスです: {relative_path}",
         )
 
 
@@ -216,11 +220,11 @@ def compile_document(
         log_parts: list[str] = []
 
         if produces_dvi:
-            for file_name, _ in pictures:
-                if Path(file_name).suffix.lower() in {".jpg", ".jpeg", ".png", ".pdf"}:
+            for relative_path, _ in pictures:
+                if Path(relative_path).suffix.lower() in {".jpg", ".jpeg", ".png", ".pdf"}:
                     log_parts.append(
                         run_process(
-                            ["/usr/bin/extractbb", "-x", f"pics/{file_name}"],
+                            ["/usr/bin/extractbb", "-x", relative_path],
                             work_directory,
                             environment,
                         )
@@ -268,14 +272,23 @@ def write_inputs(
     pictures: list[tuple[str, bytes]],
     files: list[tuple[str, bytes]],
 ) -> None:
-    (work_directory / "pics").mkdir(mode=0o700)
-    (work_directory / "files").mkdir(mode=0o700)
     (work_directory / "tex-cache").mkdir(mode=0o700)
     (work_directory / "main.tex").write_text(source, encoding="utf-8")
 
-    for folder_name, assets in (("pics", pictures), ("files", files)):
-        for file_name, content in assets:
-            (work_directory / folder_name / file_name).write_bytes(content)
+    for legacy_folder, assets in (("pics", pictures), ("files", files)):
+        for relative_path, content in assets:
+            destination = work_directory / relative_path
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            destination.write_bytes(content)
+
+            legacy_destination = work_directory / legacy_folder / Path(relative_path).name
+            if legacy_destination != destination:
+                legacy_destination.parent.mkdir(
+                    mode=0o700,
+                    parents=True,
+                    exist_ok=True,
+                )
+                legacy_destination.write_bytes(content)
 
 
 def restricted_environment(work_directory: Path) -> dict[str, str]:

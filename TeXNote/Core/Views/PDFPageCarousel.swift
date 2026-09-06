@@ -77,7 +77,10 @@ struct PDFPageCarousel: View {
             .scrollTargetBehavior(.paging)
             .scrollPosition(id: $verticalPage)
             .scrollBounceBehavior(.basedOnSize)
-            .scrollDisabled(displayedZoom > 1)
+            // ピンチ中の一時倍率でScrollViewを無効化すると、
+            // ScrollView上のMagnifyGesture自身が途中でキャンセルされる。
+            // ジェスチャー終了後に確定した倍率だけで切り替える。
+            .scrollDisabled(zoom > minimumZoom)
         }
         .onAppear {
             verticalPage = 0
@@ -119,15 +122,12 @@ struct PDFPageCarousel: View {
         }
         .scrollIndicators(.hidden)
         .scrollTargetBehavior(.paging)
-        .scrollDisabled(displayedZoom > 1)
+        .scrollDisabled(zoom > minimumZoom)
         .scrollPosition(id: Binding(
             get: { currentPage },
             set: { currentPage = $0 ?? 0 }
         ))
         .contentShape(Rectangle())
-#if !os(macOS)
-        .simultaneousGesture(zoomGesture)
-#endif
         .simultaneousGesture(
             panGesture(in: size),
             including: zoom > 1 ? .all : .none
@@ -137,8 +137,8 @@ struct PDFPageCarousel: View {
                 resetZoom()
             }
         )
-#if os(macOS)
-        .macOSPDFZoomControls(
+        .platformPDFInteractions(
+            zoomGesture: zoomGesture,
             magnify: applyMagnification,
             zoomPercentage: Int((zoom * 100).rounded()),
             canZoomOut: zoom > minimumZoom,
@@ -147,7 +147,6 @@ struct PDFPageCarousel: View {
             resetZoom: resetZoom,
             zoomIn: zoomIn
         )
-#endif
     }
 
     private func fitWidth(in availableWidth: CGFloat) -> CGFloat {

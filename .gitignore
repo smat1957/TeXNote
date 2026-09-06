@@ -3,6 +3,17 @@ moveTeXNote.sh
 build/
 **/__pycache__/
 *.pyc
+.DS_Store
+.idea/
+.venv/
+
+# LaTeX intermediate files (keep generated PDFs as distributable documents)
+*.aux
+*.dvi
+*.log
+*.out
+*.toc
+*.synctex.gz
 
 **/xcuserdata/
 *.xcuserstate

@@ -18,21 +18,33 @@ actor LocalTeXCompiler: TeXCompiling {
             .appending(path: card.id.uuidString, directoryHint: .isDirectory)
         try? manager.removeItem(at: workDirectory)
         try manager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        defer {
+            try? manager.removeItem(at: workDirectory)
+        }
 
-        for (folderName, assets) in [("pics", pictures), ("files", files)] {
-            let resourceDirectory = workDirectory.appending(
-                path: folderName,
-                directoryHint: .isDirectory
-            )
-            try manager.createDirectory(
-                at: resourceDirectory,
-                withIntermediateDirectories: true
-            )
+        for (legacyFolder, assets) in [("pics", pictures), ("files", files)] {
             for asset in assets {
-                try asset.data.write(
-                    to: resourceDirectory.appending(path: asset.fileName),
-                    options: .atomic
+                let resourceURL = try NoteFolderStore.safeURL(
+                    for: asset.relativePath,
+                    in: workDirectory
                 )
+                try manager.createDirectory(
+                    at: resourceURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try asset.data.write(to: resourceURL, options: .atomic)
+
+                let legacyPath = "\(legacyFolder)/\(asset.fileName)"
+                guard legacyPath != asset.relativePath else { continue }
+                let legacyURL = try NoteFolderStore.safeURL(
+                    for: legacyPath,
+                    in: workDirectory
+                )
+                try manager.createDirectory(
+                    at: legacyURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try asset.data.write(to: legacyURL, options: .atomic)
             }
         }
 
@@ -92,7 +104,10 @@ actor LocalTeXCompiler: TeXCompiling {
         guard manager.fileExists(atPath: pdfURL.path) else {
             throw CompilationError.pdfNotProduced(log: combinedLog)
         }
-        return CompilationResult(pdfURL: pdfURL, log: combinedLog)
+        return CompilationResult(
+            pdfData: try Data(contentsOf: pdfURL),
+            log: combinedLog
+        )
     }
 
     private func generateBoundingBoxes(
@@ -102,7 +117,7 @@ actor LocalTeXCompiler: TeXCompiling {
         let supportedExtensions = Set(["jpg", "jpeg", "png", "pdf"])
         let targets = pictures.filter {
             supportedExtensions.contains(
-                URL(filePath: $0.fileName).pathExtension.lowercased()
+                URL(filePath: $0.relativePath).pathExtension.lowercased()
             )
         }
         guard !targets.isEmpty else { return "" }
@@ -116,7 +131,7 @@ actor LocalTeXCompiler: TeXCompiling {
         for picture in targets {
             let result = try await run(
                 executable: extractor,
-                arguments: ["-x", "pics/\(picture.fileName)"],
+                arguments: ["-x", picture.relativePath],
                 directory: workDirectory
             )
             log += result.output
@@ -143,9 +158,18 @@ actor LocalTeXCompiler: TeXCompiling {
             process.currentDirectoryURL = directory
             var environment = ProcessInfo.processInfo.environment
             let existingPath = environment["PATH"] ?? ""
-            environment["PATH"] = existingPath.isEmpty
-                ? binaryDirectory.path
-                : "\(binaryDirectory.path):\(existingPath)"
+            let ghostscriptDirectories = [
+                URL(filePath: "/usr/local/bin", directoryHint: .isDirectory),
+                URL(filePath: "/opt/homebrew/bin", directoryHint: .isDirectory)
+            ].filter { directory in
+                FileManager.default.isExecutableFile(
+                    atPath: directory.appending(path: "gs").path
+                )
+            }
+            let searchPath = [binaryDirectory.path]
+                + ghostscriptDirectories.map(\.path)
+                + (existingPath.isEmpty ? [] : [existingPath])
+            environment["PATH"] = searchPath.joined(separator: ":")
             let cacheDirectory = directory.appending(path: ".tex-cache", directoryHint: .isDirectory)
             try? FileManager.default.createDirectory(
                 at: cacheDirectory,

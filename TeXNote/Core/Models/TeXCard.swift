@@ -11,7 +11,10 @@ struct TeXCard: Identifiable, Codable, Hashable, Sendable {
     var pdfRelativePath: String?
     var picturesRelativePath: String
     var filesRelativePath: String
+    var pictureRelativePaths: [String]
+    var fileRelativePaths: [String]
     var pdfData: Data? = nil
+    var pdfNeedsSaving = false
     var compiledSourceHash: String?
     var lastTypesetAt: Date?
     var createdAt: Date
@@ -33,7 +36,10 @@ struct TeXCard: Identifiable, Codable, Hashable, Sendable {
         pdfRelativePath: String? = nil,
         picturesRelativePath: String? = nil,
         filesRelativePath: String? = nil,
+        pictureRelativePaths: [String] = [],
+        fileRelativePaths: [String] = [],
         pdfData: Data? = nil,
+        pdfNeedsSaving: Bool = false,
         compiledSourceHash: String? = nil,
         lastTypesetAt: Date? = nil,
         createdAt: Date = .now,
@@ -47,10 +53,13 @@ struct TeXCard: Identifiable, Codable, Hashable, Sendable {
         self.engine = engine
         self.pdfRelativePath = pdfRelativePath
         self.picturesRelativePath = picturesRelativePath
-            ?? "\(id.uuidString)/pics"
+            ?? "Cards/\(id.uuidString)/pics"
         self.filesRelativePath = filesRelativePath
-            ?? "\(id.uuidString)/files"
+            ?? "Cards/\(id.uuidString)/files"
+        self.pictureRelativePaths = pictureRelativePaths
+        self.fileRelativePaths = fileRelativePaths
         self.pdfData = pdfData
+        self.pdfNeedsSaving = pdfNeedsSaving
         self.compiledSourceHash = compiledSourceHash
         self.lastTypesetAt = lastTypesetAt
         self.createdAt = createdAt
@@ -58,14 +67,30 @@ struct TeXCard: Identifiable, Codable, Hashable, Sendable {
     }
 
     var completeSource: String {
-        """
-        \(documentClassLine)
-        \(preamble)
+        sourcePrefixThroughDocumentBegin
+            + body
+            + "\n\\end{document}"
+    }
 
-        \\begin{document}
-        \(body)
-        \\end{document}
-        """
+    var preambleFirstLineNumber: Int {
+        logicalLineCount(in: documentClassLine) + 1
+    }
+
+    var bodyFirstLineNumber: Int {
+        sourcePrefixThroughDocumentBegin.reduce(1) {
+            $1 == "\n" ? $0 + 1 : $0
+        }
+    }
+
+    private var sourcePrefixThroughDocumentBegin: String {
+        documentClassLine
+            + "\n"
+            + preamble
+            + "\n\n\\begin{document}\n"
+    }
+
+    private func logicalLineCount(in text: String) -> Int {
+        text.reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
     }
 
     var sourceHash: String {
@@ -89,6 +114,8 @@ struct TeXCard: Identifiable, Codable, Hashable, Sendable {
         case pdfRelativePath
         case picturesRelativePath
         case filesRelativePath
+        case pictureRelativePaths
+        case fileRelativePaths
         case compiledSourceHash
         case lastTypesetAt
         case createdAt
@@ -112,7 +139,16 @@ struct TeXCard: Identifiable, Codable, Hashable, Sendable {
             String.self,
             forKey: .filesRelativePath
         )
+        pictureRelativePaths = try container.decode(
+            [String].self,
+            forKey: .pictureRelativePaths
+        )
+        fileRelativePaths = try container.decode(
+            [String].self,
+            forKey: .fileRelativePaths
+        )
         pdfData = nil
+        pdfNeedsSaving = false
         compiledSourceHash = try container.decodeIfPresent(
             String.self,
             forKey: .compiledSourceHash

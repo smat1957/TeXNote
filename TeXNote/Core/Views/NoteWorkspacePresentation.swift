@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 extension View {
     func noteWorkspacePresentation(
@@ -28,10 +27,31 @@ private struct NoteWorkspacePresentationModifier: ViewModifier {
     func body(content: Content) -> some View {
         GeometryReader { geometry in
             content
+                .modifier(PlatformTeXDocumentPickerModifier(workspace: workspace))
                 .frame(
                     maxWidth: .infinity,
                     maxHeight: .infinity
                 )
+                .overlay {
+                    if let message = workspace.fileOperationMessage {
+                        ZStack {
+                            Color.black.opacity(0.18)
+                                .ignoresSafeArea()
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                    .controlSize(.large)
+                                Text(message)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .padding(28)
+                            .background(
+                                .regularMaterial,
+                                in: RoundedRectangle(cornerRadius: 18)
+                            )
+                        }
+                        .zIndex(10)
+                    }
+                }
             .sheet(
                 isPresented: Binding(
                     get: { editingCardID != nil },
@@ -72,46 +92,93 @@ private struct NoteWorkspacePresentationModifier: ViewModifier {
                     )
                 }
             }
-            .fileImporter(
-                isPresented: $workspace.isChoosingFolder,
-                allowedContentTypes: [.folder],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    if let folder = urls.first {
-                        workspace.handleSelectedFolder(folder)
-                    } else {
-                        workspace.folderSelectionCancelled()
-                    }
-                case .failure(let error):
-                    workspace.folderSelectionFailed(error)
+            .alert(
+                "Note名を入力",
+                isPresented: $workspace.isNamingSaveAs
+            ) {
+                TextField("Note名", text: $workspace.saveAsNameDraft)
+                Button("次へ") {
+                    workspace.confirmSaveAsName()
                 }
+                .disabled(!workspace.isSaveAsNameValid)
+                Button("キャンセル", role: .cancel) {
+                    workspace.cancelSaveAsName()
+                }
+            } message: {
+                Text(
+                    "保存するPackageの名前を入力してください。"
+                        + "記号「/」と「:」は使用できません。"
+                )
+            }
+            .alert(
+                "TeX文書のファイル名を入力",
+                isPresented: Binding(
+                    get: { workspace.pendingExportFileNameFolderURL != nil },
+                    set: {
+                        if !$0,
+                           workspace.pendingExportFileNameFolderURL != nil {
+                            workspace.cancelExportFileName()
+                        }
+                    }
+                )
+            ) {
+                TextField("ファイル名", text: $workspace.exportFileNameDraft)
+                Button("エクスポート") {
+                    workspace.confirmExportFileName()
+                }
+                .disabled(!workspace.isExportFileNameValid)
+                Button("キャンセル", role: .cancel) {
+                    workspace.cancelExportFileName()
+                }
+            } message: {
+                Text(
+                    "拡張子「.tex」を除いたファイル名を入力してください。"
+                        + "記号「/」と「:」は使用できません。"
+                )
             }
             .alert(
                 "TeXNote",
                 isPresented: Binding(
-                    get: { workspace.errorMessage != nil },
-                    set: { if !$0 { workspace.errorMessage = nil } }
+                    get: {
+                        workspace.errorMessage != nil
+                            || workspace.fileOperationCompletionMessage != nil
+                    },
+                    set: {
+                        if !$0 {
+                            workspace.errorMessage = nil
+                            workspace.fileOperationCompletionMessage = nil
+                        }
+                    }
                 )
             ) {
-                Button("OK") { workspace.errorMessage = nil }
+                Button("OK") {
+                    workspace.errorMessage = nil
+                    workspace.fileOperationCompletionMessage = nil
+                }
             } message: {
-                Text(workspace.errorMessage ?? "")
+                Text(
+                    workspace.errorMessage
+                        ?? workspace.fileOperationCompletionMessage
+                        ?? ""
+                )
             }
-            .confirmationDialog(
-                "Packageに保存されていない変更があります",
+            .alert(
+                workspace.pendingUnsavedAction?.confirmationTitle ?? "",
                 isPresented: Binding(
                     get: { workspace.pendingUnsavedAction != nil },
                     set: { if !$0 { workspace.cancelPendingUnsavedAction() } }
-                ),
-                titleVisibility: .visible
+                )
             ) {
-                Button("Packageに保存…") {
-                    workspace.saveBeforePendingAction()
+                if workspace.requiresPackageSaveConfirmation {
+                    Button("Packageに保存…") {
+                        workspace.saveBeforePendingAction()
+                    }
                 }
                 if let action = workspace.pendingUnsavedAction {
-                    Button(action.discardButtonTitle, role: .destructive) {
+                    Button(
+                        action.destructiveButtonTitle,
+                        role: .destructive
+                    ) {
                         workspace.discardAndContinuePendingAction()
                     }
                 }
@@ -119,18 +186,14 @@ private struct NoteWorkspacePresentationModifier: ViewModifier {
                     workspace.cancelPendingUnsavedAction()
                 }
             } message: {
-                Text(
-                    "現在の変更はPortableなPackageに保存されていません。"
-                    + "保存しない場合、アプリ終了後には復元できません。"
-                )
+                Text(workspace.pendingUnsavedAction?.confirmationMessage ?? "")
             }
-            .confirmationDialog(
+            .alert(
                 "選択したノートを開きますか？",
                 isPresented: Binding(
                     get: { workspace.pendingOpenFolderURL != nil },
                     set: { if !$0 { workspace.cancelPendingOpen() } }
-                ),
-                titleVisibility: .visible
+                )
             ) {
                 Button("ノート名を変更して開く") {
                     workspace.confirmPendingOpen()
@@ -145,6 +208,52 @@ private struct NoteWorkspacePresentationModifier: ViewModifier {
                         + "ノート名をフォルダ名と同じにします。"
                     )
                 }
+            }
+            .confirmationDialog(
+                "同じ名前のNoteがあります",
+                isPresented: Binding(
+                    get: {
+                        workspace.pendingOverwriteSaveParentURL != nil
+                    },
+                    set: {
+                        if !$0 {
+                            workspace.cancelOverwriteSave()
+                        }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("上書き保存", role: .destructive) {
+                    workspace.confirmOverwriteSave()
+                }
+                Button("キャンセル", role: .cancel) {
+                    workspace.cancelOverwriteSave()
+                }
+            } message: {
+                Text(
+                    "選択したフォルダ内の「\(workspace.overwriteSaveName)」を"
+                    + "上書きしてもよいですか？"
+                )
+            }
+            .confirmationDialog(
+                "同じ名前の書き出し項目があります",
+                isPresented: Binding(
+                    get: { workspace.pendingOverwriteExportFolderURL != nil },
+                    set: { if !$0 { workspace.cancelOverwriteExport() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("上書き", role: .destructive) {
+                    workspace.confirmOverwriteExport()
+                }
+                Button("キャンセル", role: .cancel) {
+                    workspace.cancelOverwriteExport()
+                }
+            } message: {
+                Text(
+                    workspace.exportConflictNames.joined(separator: "、")
+                        + "を上書きしてもよいですか？"
+                )
             }
         }
     }
