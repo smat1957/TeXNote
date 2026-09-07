@@ -19,6 +19,7 @@ struct TeXSourceEditor: UIViewRepresentable {
         textView.delegate = context.coordinator
         textView.backgroundColor = .clear
         textView.font = .monospacedSystemFont(ofSize: 16, weight: .regular)
+        textView.textColor = .label
         textView.adjustsFontForContentSizeCategory = true
         textView.smartQuotesType = .no
         textView.smartDashesType = .no
@@ -32,6 +33,7 @@ struct TeXSourceEditor: UIViewRepresentable {
         container.firstLineNumber = firstLineNumber
         context.coordinator.textView = textView
         context.coordinator.container = container
+        context.coordinator.startObservingKeyboard()
         context.coordinator.setText(text, selection: selection)
         return container
     }
@@ -65,6 +67,7 @@ struct TeXSourceEditor: UIViewRepresentable {
         weak var textView: UITextView?
         weak var container: TeXEditorContainerView?
         private var isApplyingHighlight = false
+        private var contentOffsetBeforeKeyboard: CGPoint?
         var lastSearchText = ""
         var lastSearchIsCaseSensitive = false
 
@@ -75,6 +78,55 @@ struct TeXSourceEditor: UIViewRepresentable {
 
         init(parent: TeXSourceEditor) {
             self.parent = parent
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        func startObservingKeyboard() {
+            let center = NotificationCenter.default
+            center.addObserver(
+                self,
+                selector: #selector(keyboardWillShow(_:)),
+                name: UIResponder.keyboardWillShowNotification,
+                object: nil
+            )
+            center.addObserver(
+                self,
+                selector: #selector(keyboardDidShow(_:)),
+                name: UIResponder.keyboardDidShowNotification,
+                object: nil
+            )
+        }
+
+        @objc private func keyboardWillShow(_ notification: Notification) {
+            guard let textView, textView.isFirstResponder else { return }
+            contentOffsetBeforeKeyboard = textView.contentOffset
+        }
+
+        @objc private func keyboardDidShow(_ notification: Notification) {
+            restoreViewportAfterKeyboardAppears()
+        }
+
+        private func restoreViewportAfterKeyboardAppears() {
+            guard let textView,
+                  textView.isFirstResponder,
+                  let contentOffsetBeforeKeyboard else { return }
+            self.contentOffsetBeforeKeyboard = nil
+            textView.layoutIfNeeded()
+            textView.setContentOffset(contentOffsetBeforeKeyboard, animated: false)
+
+            guard let position = textView.position(
+                from: textView.beginningOfDocument,
+                offset: textView.selectedRange.location
+            ) else { return }
+            let caretRect = textView.caretRect(for: position)
+            let visibleRect = CGRect(origin: textView.contentOffset, size: textView.bounds.size)
+                .insetBy(dx: 0, dy: 8)
+            if !visibleRect.intersects(caretRect) {
+                textView.scrollRangeToVisible(textView.selectedRange)
+            }
         }
 
         func textViewDidChange(_ textView: UITextView) {
@@ -108,10 +160,8 @@ struct TeXSourceEditor: UIViewRepresentable {
         }
 
         private func highlight(_ textView: UITextView) {
-            let selectedRange = textView.selectedRange
             isApplyingHighlight = true
             highlightAttributes(textView)
-            textView.selectedRange = clamp(selectedRange, textView.text.utf16.count)
             isApplyingHighlight = false
         }
 
@@ -128,34 +178,57 @@ struct TeXSourceEditor: UIViewRepresentable {
         }
 
         private func highlightAttributes(_ textView: UITextView) {
-            let storage = textView.textStorage
-            let fullRange = NSRange(location: 0, length: storage.length)
-            storage.beginEditing()
-            storage.setAttributes([
-                .font: UIFont.monospacedSystemFont(ofSize: 16, weight: .regular),
-                .foregroundColor: UIColor.label
-            ], range: fullRange)
-            for span in TeXSyntaxHighlighting.spans(in: textView.text) {
-                storage.addAttribute(.foregroundColor, value: color(for: span.kind), range: span.range)
-            }
-            for range in TeXSyntaxHighlighting.searchRanges(
-                in: textView.text,
-                query: parent.searchText,
-                caseSensitive: parent.searchIsCaseSensitive
-            ) {
-                storage.addAttribute(
-                    .backgroundColor,
-                    value: UIColor.systemYellow.withAlphaComponent(0.45),
-                    range: range
+            if let layoutManager = textView.textLayoutManager,
+               let contentManager = layoutManager.textContentManager {
+                layoutManager.invalidateRenderingAttributes(
+                    for: contentManager.documentRange
                 )
+                for span in TeXSyntaxHighlighting.spans(in: textView.text) {
+                    guard let range = textRange(for: span.range, in: contentManager) else {
+                        continue
+                    }
+                    layoutManager.setRenderingAttributes(
+                        [.foregroundColor: color(for: span.kind)],
+                        for: range
+                    )
+                }
+                for searchRange in TeXSyntaxHighlighting.searchRanges(
+                    in: textView.text,
+                    query: parent.searchText,
+                    caseSensitive: parent.searchIsCaseSensitive
+                ) {
+                    guard let range = textRange(for: searchRange, in: contentManager) else {
+                        continue
+                    }
+                    layoutManager.setRenderingAttributes(
+                        [.backgroundColor: UIColor.systemYellow.withAlphaComponent(0.45)],
+                        for: range
+                    )
+                }
             }
-            storage.endEditing()
             textView.typingAttributes = [
                 .font: UIFont.monospacedSystemFont(ofSize: 16, weight: .regular),
                 .foregroundColor: UIColor.label
             ]
             lastSearchText = parent.searchText
             lastSearchIsCaseSensitive = parent.searchIsCaseSensitive
+        }
+
+        private func textRange(
+            for range: NSRange,
+            in contentManager: NSTextContentManager
+        ) -> NSTextRange? {
+            let documentStart = contentManager.documentRange.location
+            guard let start = contentManager.location(
+                documentStart,
+                offsetBy: range.location
+            ), let end = contentManager.location(
+                start,
+                offsetBy: range.length
+            ) else {
+                return nil
+            }
+            return NSTextRange(location: start, end: end)
         }
 
         private func color(for kind: TeXSyntaxKind) -> UIColor {
