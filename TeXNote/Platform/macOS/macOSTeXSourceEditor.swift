@@ -84,6 +84,7 @@ struct TeXSourceEditor: NSViewRepresentable {
         )
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: TeXSourceEditor
         weak var textView: NSTextView?
