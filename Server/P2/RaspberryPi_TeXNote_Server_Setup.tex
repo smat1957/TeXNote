@@ -896,6 +896,10 @@ sudo systemctl status texnote-server --no-pager
 文書固有の\texttt{.sty}、画像、データはTeXNoteの「画像・ファイル」から送る。
 新しいAPIでは各リソースがノートルート基準の安全な相対パスを持ち、
 サーバー上の一時作業ディレクトリにもその階層が再現される。
+例えば\texttt{Cards/<CARD-UUID>/files/python/tokens.py}を受信した場合、
+TeXから参照する互換パスは\texttt{files/python/tokens.py}となる。
+\texttt{legacy\_asset\_path()}は\texttt{files}または\texttt{pics}より後ろの
+サブフォルダ階層を維持する。
 例えば\texttt{files/}以下のリソースは次のように参照する。
 \begin{command}
 \usepackage{files/my-style}

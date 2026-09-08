@@ -473,12 +473,13 @@ curl -sS -X POST http://127.0.0.1:8000/compile \
 
 \begin{command}
 {
-  "relativePath": "images/example.png",
+  "relativePath": "Cards/<CARD-UUID>/files/python/tokens.py",
   "data": "<BASE64_DATA>"
 }
 \end{command}
 
-P1はcardIDをUUIDで生成し、P2の\texttt{/v1/typeset}用JSONへ変換する。成功時は
+P1は\texttt{relativePath}を変更せず、サブフォルダ階層を維持したままP2へ中継する。
+また、cardIDをUUIDで生成し、P2の\texttt{/v1/typeset}用JSONへ変換する。成功時は
 \texttt{user\_id}、\texttt{pdfBase64}、\texttt{log}を返す。実際の試験ではP2の
 LuaLaTeXが1ページのPDFを生成し、Base64がP1経由で返るところまで確認済みである。
 
