@@ -67,7 +67,9 @@ extension View {
         canZoomIn: Bool,
         zoomOut: @escaping () -> Void,
         resetZoom: @escaping () -> Void,
-        zoomIn: @escaping () -> Void
+        zoomIn: @escaping () -> Void,
+        canRevealSidebar: Bool,
+        revealSidebar: @escaping () -> Void
     ) -> some View {
         modifier(macOSPDFZoomControlsModifier(
             magnify: magnify,

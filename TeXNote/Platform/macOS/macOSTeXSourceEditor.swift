@@ -68,12 +68,15 @@ struct TeXSourceEditor: NSViewRepresentable {
         guard !textView.hasMarkedText() else { return }
         if textView.string != text {
             context.coordinator.setText(text, selection: selection)
-        } else if context.coordinator.searchConfigurationChanged {
-            context.coordinator.refreshHighlighting(scrollToFirstMatch: true)
-        } else if textView.selectedRange() != selection {
-            let range = clamped(selection, length: textView.string.utf16.count)
-            textView.setSelectedRange(range)
-            textView.scrollRangeToVisible(range)
+        } else {
+            if context.coordinator.searchConfigurationChanged {
+                context.coordinator.refreshHighlighting()
+            }
+            if textView.selectedRange() != selection {
+                let range = clamped(selection, length: textView.string.utf16.count)
+                textView.setSelectedRange(range)
+                textView.scrollRangeToVisible(range)
+            }
         }
     }
 

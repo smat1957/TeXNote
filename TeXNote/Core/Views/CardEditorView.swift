@@ -24,7 +24,10 @@ struct CardEditorView: View {
     @State private var pendingResourceDeletion: PendingResourceDeletion?
     @AppStorage("showsEditorLineNumbers") private var showsLineNumbers = false
     @State private var searchText = ""
+    @State private var replacementText = ""
     @State private var searchIsCaseSensitive = false
+    @State private var searchWraps = true
+    @State private var isShowingEditorSearch = false
     @State private var lineNumberText = ""
     @State private var navigationMessage: String?
     @State private var bodySelection = NSRange(location: 0, length: 0)
@@ -107,6 +110,25 @@ struct CardEditorView: View {
         }
         .background(Color.gray.opacity(0.10))
         .overlay {
+            if isShowingEditorSearch {
+                PlatformEditorSearchPanel(
+                    searchText: $searchText,
+                    replacementText: $replacementText,
+                    isCaseSensitive: $searchIsCaseSensitive,
+                    wrapsSearch: $searchWraps,
+                    currentMatchIndex: searchStatus.displayedIndex,
+                    matchCount: searchStatus.matchCount,
+                    searchEnabled: isSearchableTab,
+                    selectPrevious: selectPreviousSearchMatch,
+                    selectNext: selectNextSearchMatch,
+                    replaceCurrent: replaceCurrentSearchMatch,
+                    replaceAll: replaceAllSearchMatches,
+                    close: { isShowingEditorSearch = false }
+                )
+                .zIndex(5)
+            }
+        }
+        .overlay {
             if isSaving {
                 ZStack {
                     Color.black.opacity(0.12)
@@ -175,6 +197,18 @@ struct CardEditorView: View {
                 Text("\(pendingResourceDeletion.relativeName)をPackageから削除します。")
             }
         }
+        .onChange(of: searchText) {
+            selectFirstSearchMatch()
+        }
+        .onChange(of: searchIsCaseSensitive) {
+            selectFirstSearchMatch()
+        }
+        .onChange(of: lineNumberText) {
+            let digits = lineNumberText.filter(\.isNumber)
+            if digits != lineNumberText {
+                lineNumberText = digits
+            }
+        }
     }
 
     @ViewBuilder
@@ -192,12 +226,10 @@ struct CardEditorView: View {
                 .frame(maxWidth: .infinity)
                 HStack(spacing: 8) {
                     compactLineNumberButton
+                    Spacer()
                     lineNumberField
-                        .padding(.leading, 12)
-                    searchField
-                        .frame(maxWidth: .infinity)
-                    caseSensitivityButton
-                    nextSearchButton
+                    lineNavigationButton
+                    editorSearchButton
                 }
             }
         } else {
@@ -206,12 +238,10 @@ struct CardEditorView: View {
                     cardTitleField
                 }
                 lineNumberToggle
+                Spacer()
                 lineNumberField
-                    .padding(.leading, 24)
-                searchField
-                    .frame(width: 170)
-                caseSensitivityButton
-                nextSearchButton
+                lineNavigationButton
+                editorSearchButton
                 Spacer()
                 saveButton
                 typesetButton
@@ -303,29 +333,19 @@ struct CardEditorView: View {
         .accessibilityLabel("キャンセル")
     }
 
-    private var searchField: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("文字列検索", text: $searchText)
-                .textFieldStyle(.plain)
-            if !searchText.isEmpty {
-                Text("\(searchMatchCount)件")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-                Button("検索をクリア", systemImage: "xmark.circle.fill") {
-                    searchText = ""
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+    private var editorSearchButton: some View {
+        Button {
+            isShowingEditorSearch.toggle()
+            if isShowingEditorSearch, searchStatus.currentIndex == nil {
+                selectFirstSearchMatch()
             }
+        } label: {
+            Image(systemName: "magnifyingglass")
+                .frame(width: 24, height: 24)
         }
-        .font(.caption)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityLabel("検索と置換")
     }
 
     private var lineNumberField: some View {
@@ -338,41 +358,13 @@ struct CardEditorView: View {
             .onSubmit {
                 navigateToDisplayedLine()
             }
-            .onChange(of: lineNumberText) {
-                let digits = lineNumberText.filter(\.isNumber)
-                if digits != lineNumberText {
-                    lineNumberText = digits
-                }
-            }
             .accessibilityLabel("移動する行番号")
     }
 
-    private var caseSensitivityButton: some View {
-        Button {
-            searchIsCaseSensitive.toggle()
-        } label: {
-            Text(searchIsCaseSensitive ? "Aa" : "aa")
-                .font(.system(.body, design: .rounded).weight(.semibold))
-                .frame(minWidth: 24, minHeight: 24)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .tint(searchIsCaseSensitive ? Color.accentColor : Color.secondary)
-        .accessibilityLabel("大文字と小文字を区別")
-        .accessibilityValue(searchIsCaseSensitive ? "オン" : "オフ")
-    }
-
-    private var nextSearchButton: some View {
-        Button {
-            selectNextSearchMatch()
-        } label: {
-            Image(systemName: "chevron.down")
-                .frame(width: 24, height: 24)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(searchText.isEmpty || searchMatchCount == 0)
-        .accessibilityLabel("次を検索")
+    private var lineNavigationButton: some View {
+        Button("移動", action: navigateToDisplayedLine)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
     }
 
     private var saveButton: some View {
@@ -507,23 +499,33 @@ struct CardEditorView: View {
         .scrollContentBackground(.hidden)
     }
 
-    private var searchMatchCount: Int {
-        let target: String
+    private var searchTarget: (text: String, selection: NSRange)? {
         switch selectedTab {
-        case .source: target = draft.body
-        case .settings: target = draft.preamble
-        case .resources, .error: target = ""
+        case .source: (draft.body, bodySelection)
+        case .settings: (draft.preamble, preambleSelection)
+        case .resources, .error: nil
         }
-        return TeXSyntaxHighlighting.searchRanges(
-            in: target,
+    }
+
+    private var isSearchableTab: Bool { searchTarget != nil }
+
+    private var searchStatus: EditorSearchStatus {
+        guard let searchTarget else {
+            return EditorSearchStatus(ranges: [], currentIndex: nil)
+        }
+        return EditorSearchService.status(
+            in: searchTarget.text,
             query: searchText,
-            caseSensitive: searchIsCaseSensitive
-        ).count
+            caseSensitive: searchIsCaseSensitive,
+            selection: searchTarget.selection
+        )
     }
 
     private func navigateToDisplayedLine() {
         guard let lineNumber = Int(lineNumberText), lineNumber > 0 else {
-            navigationMessage = "1以上の行番号を入力してください。"
+            navigationMessage = String(
+                localized: "1以上の行番号を入力してください。"
+            )
             return
         }
 
@@ -532,7 +534,9 @@ struct CardEditorView: View {
         )
         if lineNumber <= documentClassLastLine {
             selectedTab = .settings
-            navigationMessage = "この行はdocumentclass欄です。"
+            navigationMessage = String(
+                localized: "この行はdocumentclass欄です。"
+            )
             return
         }
 
@@ -558,9 +562,13 @@ struct CardEditorView: View {
 
         let completeSourceLastLine = logicalLineCount(in: draft.completeSource)
         if lineNumber <= completeSourceLastLine {
-            navigationMessage = "この行はTeXNoteが生成する構造行で、直接編集できません。"
+            navigationMessage = String(
+                localized: "この行はTeXNoteが生成する構造行で、直接編集できません。"
+            )
         } else {
-            navigationMessage = "この文書は\(completeSourceLastLine)行までです。"
+            navigationMessage = String(
+                localized: "この文書は\(completeSourceLastLine)行までです。"
+            )
         }
     }
 
@@ -571,15 +579,110 @@ struct CardEditorView: View {
                 in: draft.body,
                 query: searchText,
                 caseSensitive: searchIsCaseSensitive,
-                after: bodySelection
+                after: bodySelection,
+                wraps: searchWraps
             ) ?? bodySelection
         case .settings:
             preambleSelection = TeXSyntaxHighlighting.nextSearchRange(
                 in: draft.preamble,
                 query: searchText,
                 caseSensitive: searchIsCaseSensitive,
-                after: preambleSelection
+                after: preambleSelection,
+                wraps: searchWraps
             ) ?? preambleSelection
+        case .resources, .error:
+            break
+        }
+    }
+
+    private func selectPreviousSearchMatch() {
+        switch selectedTab {
+        case .source:
+            bodySelection = TeXSyntaxHighlighting.previousSearchRange(
+                in: draft.body,
+                query: searchText,
+                caseSensitive: searchIsCaseSensitive,
+                before: bodySelection,
+                wraps: searchWraps
+            ) ?? bodySelection
+        case .settings:
+            preambleSelection = TeXSyntaxHighlighting.previousSearchRange(
+                in: draft.preamble,
+                query: searchText,
+                caseSensitive: searchIsCaseSensitive,
+                before: preambleSelection,
+                wraps: searchWraps
+            ) ?? preambleSelection
+        case .resources, .error:
+            break
+        }
+    }
+
+    private func selectFirstSearchMatch() {
+        guard !searchText.isEmpty else { return }
+        switch selectedTab {
+        case .source:
+            bodySelection = TeXSyntaxHighlighting.searchRanges(
+                in: draft.body,
+                query: searchText,
+                caseSensitive: searchIsCaseSensitive
+            ).first ?? bodySelection
+        case .settings:
+            preambleSelection = TeXSyntaxHighlighting.searchRanges(
+                in: draft.preamble,
+                query: searchText,
+                caseSensitive: searchIsCaseSensitive
+            ).first ?? preambleSelection
+        case .resources, .error:
+            break
+        }
+    }
+
+    private func replaceCurrentSearchMatch() {
+        switch selectedTab {
+        case .source:
+            applyCurrentReplacement(toBody: true)
+        case .settings:
+            applyCurrentReplacement(toBody: false)
+        case .resources, .error:
+            break
+        }
+    }
+
+    private func applyCurrentReplacement(toBody: Bool) {
+        let text = toBody ? draft.body : draft.preamble
+        let selection = toBody ? bodySelection : preambleSelection
+        guard let result = EditorSearchService.replacingCurrent(
+            in: text,
+            query: searchText,
+            replacement: replacementText,
+            caseSensitive: searchIsCaseSensitive,
+            selection: selection
+        ) else { return }
+        if toBody {
+            draft.body = result.text
+            bodySelection = result.selection
+        } else {
+            draft.preamble = result.text
+            preambleSelection = result.selection
+        }
+    }
+
+    private func replaceAllSearchMatches() {
+        guard let target = searchTarget,
+              let result = EditorSearchService.replacingAll(
+                  in: target.text,
+                  query: searchText,
+                  replacement: replacementText,
+                  caseSensitive: searchIsCaseSensitive
+              ) else { return }
+        switch selectedTab {
+        case .source:
+            draft.body = result.text
+            bodySelection = result.selection
+        case .settings:
+            draft.preamble = result.text
+            preambleSelection = result.selection
         case .resources, .error:
             break
         }

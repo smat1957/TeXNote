@@ -45,12 +45,15 @@ struct TeXSourceEditor: UIViewRepresentable {
         container.firstLineNumber = firstLineNumber
         if textView.text != text {
             context.coordinator.setText(text, selection: selection)
-        } else if context.coordinator.searchConfigurationChanged {
-            context.coordinator.refreshHighlighting(scrollToFirstMatch: true)
-        } else if textView.selectedRange != selection {
-            let range = clamped(selection, length: textView.text.utf16.count)
-            textView.selectedRange = range
-            textView.scrollRangeToVisible(range)
+        } else {
+            if context.coordinator.searchConfigurationChanged {
+                context.coordinator.refreshHighlighting()
+            }
+            if textView.selectedRange != selection {
+                let range = clamped(selection, length: textView.text.utf16.count)
+                textView.selectedRange = range
+                textView.scrollRangeToVisible(range)
+            }
         }
     }
 

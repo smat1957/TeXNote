@@ -289,7 +289,9 @@ struct NoteContentView: View {
                         isConfirmingDeletion = true
                     },
                     nextCardAction: selectNextCard,
-                    previousCardAction: selectPreviousCard
+                    previousCardAction: selectPreviousCard,
+                    canRevealSidebar: splitViewVisibility == .detailOnly,
+                    revealSidebarAction: showSidebar
                 )
                 .id(selectedCardBinding.wrappedValue.id)
             } else {

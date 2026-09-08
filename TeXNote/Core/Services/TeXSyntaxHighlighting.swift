@@ -103,7 +103,8 @@ enum TeXSyntaxHighlighting {
         in text: String,
         query: String,
         caseSensitive: Bool,
-        after selection: NSRange
+        after selection: NSRange,
+        wraps: Bool
     ) -> NSRange? {
         let ranges = searchRanges(
             in: text,
@@ -112,7 +113,25 @@ enum TeXSyntaxHighlighting {
         )
         guard !ranges.isEmpty else { return nil }
         let nextLocation = NSMaxRange(selection)
-        return ranges.first { $0.location >= nextLocation } ?? ranges.first
+        return ranges.first { $0.location >= nextLocation }
+            ?? (wraps ? ranges.first : nil)
+    }
+
+    static func previousSearchRange(
+        in text: String,
+        query: String,
+        caseSensitive: Bool,
+        before selection: NSRange,
+        wraps: Bool
+    ) -> NSRange? {
+        let ranges = searchRanges(
+            in: text,
+            query: query,
+            caseSensitive: caseSensitive
+        )
+        guard !ranges.isEmpty else { return nil }
+        return ranges.last { NSMaxRange($0) <= selection.location }
+            ?? (wraps ? ranges.last : nil)
     }
 
     static func selectionRange(

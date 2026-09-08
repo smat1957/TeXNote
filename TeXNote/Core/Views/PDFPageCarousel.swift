@@ -9,6 +9,8 @@ struct PDFPageCarousel: View {
     private let canSelectPreviousCard: Bool
     private let nextCardAction: () -> Void
     private let previousCardAction: () -> Void
+    private let canRevealSidebar: Bool
+    private let revealSidebarAction: () -> Void
     @Binding private var position: PDFPagePosition
 
     @State private var currentPage = 0
@@ -31,7 +33,9 @@ struct PDFPageCarousel: View {
         canSelectNextCard: Bool,
         canSelectPreviousCard: Bool,
         nextCardAction: @escaping () -> Void,
-        previousCardAction: @escaping () -> Void
+        previousCardAction: @escaping () -> Void,
+        canRevealSidebar: Bool,
+        revealSidebarAction: @escaping () -> Void
     ) {
         self.data = data
         pages = PDFPageRenderer.render(data: data)
@@ -40,6 +44,8 @@ struct PDFPageCarousel: View {
         self.canSelectPreviousCard = canSelectPreviousCard
         self.nextCardAction = nextCardAction
         self.previousCardAction = previousCardAction
+        self.canRevealSidebar = canRevealSidebar
+        self.revealSidebarAction = revealSidebarAction
     }
 
     var body: some View {
@@ -145,7 +151,10 @@ struct PDFPageCarousel: View {
             canZoomIn: zoom < maximumZoom,
             zoomOut: zoomOut,
             resetZoom: resetZoom,
-            zoomIn: zoomIn
+            zoomIn: zoomIn,
+            canRevealSidebar:
+                canRevealSidebar && currentPage == 0 && zoom <= minimumZoom,
+            revealSidebar: revealSidebarAction
         )
     }
 

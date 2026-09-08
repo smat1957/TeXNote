@@ -18,6 +18,8 @@ struct CardDetailView: View {
     let deleteAction: () -> Void
     let nextCardAction: () -> Void
     let previousCardAction: () -> Void
+    let canRevealSidebar: Bool
+    let revealSidebarAction: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,7 +34,9 @@ struct CardDetailView: View {
                     canSelectNextCard: canSelectNextCard,
                     canSelectPreviousCard: canSelectPreviousCard,
                     nextCardAction: nextCardAction,
-                    previousCardAction: previousCardAction
+                    previousCardAction: previousCardAction,
+                    canRevealSidebar: canRevealSidebar,
+                    revealSidebarAction: revealSidebarAction
                 )
                 .background(Color.gray.opacity(0.30))
             } else {

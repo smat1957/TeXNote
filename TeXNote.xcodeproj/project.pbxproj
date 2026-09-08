@@ -23,6 +23,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Platform/iOS/iOSEditorSearchPanel.swift,
 				Platform/iOS/iOSPDFInteractions.swift,
 				Platform/iOS/iOSResourceTree.swift,
 				Platform/iOS/iOSTeXNoteRootView.swift,
@@ -57,6 +58,7 @@
 				Platform/iPhone/iPhoneTeXDocumentPickerModifier.swift,
 				Platform/iPhone/iPhoneTeXNoteApp.swift,
 				Platform/macOS/LocalTeXCompiler.swift,
+				Platform/macOS/macOSEditorSearchPanel.swift,
 				Platform/macOS/macOSAboutView.swift,
 				Platform/macOS/macOSApplicationDelegate.swift,
 				Platform/macOS/macOSDetailNavigationChrome.swift,
@@ -84,6 +86,7 @@
 				Platform/iPad/iPadTeXNoteApp.swift,
 				Platform/iPhone/Info.plist,
 				Platform/macOS/LocalTeXCompiler.swift,
+				Platform/macOS/macOSEditorSearchPanel.swift,
 				Platform/macOS/macOSAboutView.swift,
 				Platform/macOS/macOSApplicationDelegate.swift,
 				Platform/macOS/macOSDetailNavigationChrome.swift,
