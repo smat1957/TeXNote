@@ -61,7 +61,7 @@ enum NoteFolderError: LocalizedError {
     }
 }
 
-enum CardResourceDirectory: Equatable {
+enum CardResourceDirectory: Equatable, Sendable {
     case pictures
     case files
 
@@ -749,6 +749,30 @@ enum NoteFolderStore {
             }
         }
 
+        var coordinationError: NSError?
+        var coordinatedResult: Result<[SelectedFile], Error>?
+        NSFileCoordinator().coordinate(
+            readingItemAt: sourceURL,
+            options: [],
+            error: &coordinationError
+        ) { coordinatedURL in
+            coordinatedResult = Result {
+                try readSelectedFiles(at: coordinatedURL, kind: kind)
+            }
+        }
+        if let coordinationError {
+            throw coordinationError
+        }
+        guard let coordinatedResult else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return try coordinatedResult.get()
+    }
+
+    private static func readSelectedFiles(
+        at sourceURL: URL,
+        kind: CardResourceDirectory
+    ) throws -> [SelectedFile] {
         let values = try sourceURL.resourceValues(
             forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
         )
@@ -762,14 +786,18 @@ enum NoteFolderStore {
             )]
         }
 
+        var resourceKeys: Set<URLResourceKey> = [
+            .isDirectoryKey,
+            .isRegularFileKey,
+            .isSymbolicLinkKey
+        ]
+        if kind == .pictures {
+            resourceKeys.insert(.contentTypeKey)
+        }
+
         guard let enumerator = FileManager.default.enumerator(
             at: sourceURL,
-            includingPropertiesForKeys: [
-                .isDirectoryKey,
-                .isRegularFileKey,
-                .isSymbolicLinkKey,
-                .contentTypeKey
-            ],
+            includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsHiddenFiles]
         ) else {
             throw CocoaError(.fileReadUnknown)
@@ -777,14 +805,7 @@ enum NoteFolderStore {
 
         var files: [SelectedFile] = []
         for case let fileURL as URL in enumerator {
-            let fileValues = try fileURL.resourceValues(
-                forKeys: [
-                    .isDirectoryKey,
-                    .isRegularFileKey,
-                    .isSymbolicLinkKey,
-                    .contentTypeKey
-                ]
-            )
+            let fileValues = try fileURL.resourceValues(forKeys: resourceKeys)
             if fileValues.isSymbolicLink == true {
                 if fileValues.isDirectory == true {
                     enumerator.skipDescendants()

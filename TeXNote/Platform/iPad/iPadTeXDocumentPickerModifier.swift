@@ -116,7 +116,8 @@ private struct PlatformFolderPicker: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: [.folder]
+            forOpeningContentTypes: [.folder],
+            asCopy: false
         )
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false

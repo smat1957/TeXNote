@@ -49,19 +49,11 @@ struct PlatformEditorSearchPanel: View {
                     .accessibilityLabel("検索結果を循環")
                 Spacer()
                 Button("前を検索", systemImage: "chevron.up", action: selectPrevious)
-                    .labelStyle(.iconOnly)
-                    .buttonBorderShape(.circle)
+                    .labelStyle(.titleAndIcon)
                     .disabled(!searchEnabled || matchCount == 0)
                 Button("次を検索", systemImage: "chevron.down", action: selectNext)
-                    .labelStyle(.iconOnly)
-                    .buttonBorderShape(.circle)
+                    .labelStyle(.titleAndIcon)
                     .disabled(!searchEnabled || matchCount == 0)
-                Button("置換", action: replaceCurrent)
-                    .disabled(!searchEnabled || matchCount == 0)
-                    .contextMenu {
-                        Button("すべて置換", action: replaceAll)
-                    }
-                    .accessibilityHint("長押しですべて置換")
                 Spacer()
                 (Text("\(currentMatchIndex) / \(matchCount) ") + Text("件"))
                     .font(.caption)
@@ -83,6 +75,7 @@ struct PlatformEditorSearchPanel: View {
 
             HStack(spacing: 6) {
                 TextField("置換文字列", text: $replacementText)
+                replaceButton
             }
         }
         .textFieldStyle(.roundedBorder)
@@ -97,6 +90,15 @@ struct PlatformEditorSearchPanel: View {
         }
         .shadow(radius: 8, y: 3)
         .offset(offset)
+    }
+
+    private var replaceButton: some View {
+        Button("置換", action: replaceCurrent)
+            .disabled(!searchEnabled || matchCount == 0)
+            .contextMenu {
+                Button("すべて置換", action: replaceAll)
+            }
+            .accessibilityHint("長押しですべて置換")
     }
 
     private var dragGesture: some Gesture {

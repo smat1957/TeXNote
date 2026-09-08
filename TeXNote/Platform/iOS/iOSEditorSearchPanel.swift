@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct PlatformEditorSearchPanel: View {
     @Binding var searchText: String
@@ -59,20 +60,8 @@ struct PlatformEditorSearchPanel: View {
                     .tint(wrapsSearch ? Color.accentColor : Color.secondary)
                     .accessibilityLabel("検索結果を循環")
                 Spacer()
-                Button("前を検索", systemImage: "chevron.up", action: selectPrevious)
-                    .labelStyle(.iconOnly)
-                    .buttonBorderShape(.circle)
-                    .disabled(!searchEnabled || matchCount == 0)
-                Button("次を検索", systemImage: "chevron.down", action: selectNext)
-                    .labelStyle(.iconOnly)
-                    .buttonBorderShape(.circle)
-                    .disabled(!searchEnabled || matchCount == 0)
-                Button("置換", action: replaceCurrent)
-                    .disabled(!searchEnabled || matchCount == 0)
-                    .contextMenu {
-                        Button("すべて置換", action: replaceAll)
-                    }
-                    .accessibilityHint("長押しですべて置換")
+                previousSearchButton
+                nextSearchButton
                 Spacer()
                 (Text("\(currentMatchIndex) / \(matchCount) ") + Text("件"))
                     .font(.caption)
@@ -93,6 +82,7 @@ struct PlatformEditorSearchPanel: View {
 
             HStack(spacing: 6) {
                 TextField("置換文字列", text: $replacementText)
+                replaceButton
             }
         }
         .textFieldStyle(.roundedBorder)
@@ -105,6 +95,43 @@ struct PlatformEditorSearchPanel: View {
                 .stroke(.separator, lineWidth: 1)
         }
         .shadow(radius: 8, y: 3)
+    }
+
+    private var replaceButton: some View {
+        Button("置換", action: replaceCurrent)
+            .disabled(!searchEnabled || matchCount == 0)
+            .contextMenu {
+                Button("すべて置換", action: replaceAll)
+            }
+            .accessibilityHint("長押しですべて置換")
+    }
+
+    @ViewBuilder
+    private var previousSearchButton: some View {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            Button("前を検索", systemImage: "chevron.up", action: selectPrevious)
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.circle)
+                .disabled(!searchEnabled || matchCount == 0)
+        } else {
+            Button("前を検索", systemImage: "chevron.up", action: selectPrevious)
+                .labelStyle(.titleOnly)
+                .disabled(!searchEnabled || matchCount == 0)
+        }
+    }
+
+    @ViewBuilder
+    private var nextSearchButton: some View {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            Button("次を検索", systemImage: "chevron.down", action: selectNext)
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.circle)
+                .disabled(!searchEnabled || matchCount == 0)
+        } else {
+            Button("次を検索", systemImage: "chevron.down", action: selectNext)
+                .labelStyle(.titleOnly)
+                .disabled(!searchEnabled || matchCount == 0)
+        }
     }
 
     private func dragGesture(in size: CGSize) -> some Gesture {

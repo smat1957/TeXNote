@@ -17,6 +17,7 @@ struct CardEditorView: View {
     @State private var selectedTab: EditTab = .source
     @State private var isCompiling = false
     @State private var isSaving = false
+    @State private var isImportingResources = false
     @State private var hasSavedChangesInSession = false
     @State private var compilationLog = ""
     @State private var errorMessage: String?
@@ -129,14 +130,18 @@ struct CardEditorView: View {
             }
         }
         .overlay {
-            if isSaving {
+            if isSaving || isImportingResources {
                 ZStack {
                     Color.black.opacity(0.12)
                         .ignoresSafeArea()
                     VStack(spacing: 14) {
                         ProgressView()
                             .controlSize(.large)
-                        Text("保存しています…")
+                        Text(
+                            isImportingResources
+                                ? "読み込んでいます…"
+                                : "保存しています…"
+                        )
                     }
                     .padding(24)
                     .background(
@@ -717,7 +722,7 @@ struct CardEditorView: View {
     }
 
     private var isBusy: Bool {
-        isSaving || isCompiling
+        isSaving || isCompiling || isImportingResources
     }
 
     private func hasChanges() -> Bool {
@@ -812,23 +817,35 @@ struct CardEditorView: View {
     ) {
         do {
             let urls = try result.get()
-            let imported = try NoteFolderStore.importResources(
-                from: urls,
-                for: draft,
-                kind: kind,
-                into: noteFolder
-            )
-            switch kind {
-            case .pictures:
-                pictures = imported
-                draft.pictureRelativePaths = imported.map(\.relativePath)
-            case .files:
-                files = imported
-                draft.fileRelativePaths = imported.map(\.relativePath)
-            }
+            let draftSnapshot = draft
+            let noteFolderSnapshot = noteFolder
+            isImportingResources = true
             Task {
-                await commitDraft()
-                creationCommitted()
+                do {
+                    let imported = try await Task.detached(
+                        priority: .userInitiated
+                    ) {
+                        try NoteFolderStore.importResources(
+                            from: urls,
+                            for: draftSnapshot,
+                            kind: kind,
+                            into: noteFolderSnapshot
+                        )
+                    }.value
+                    switch kind {
+                    case .pictures:
+                        pictures = imported
+                        draft.pictureRelativePaths = imported.map(\.relativePath)
+                    case .files:
+                        files = imported
+                        draft.fileRelativePaths = imported.map(\.relativePath)
+                    }
+                    await commitDraft()
+                    creationCommitted()
+                } catch {
+                    resourceError = error.localizedDescription
+                }
+                isImportingResources = false
             }
         } catch {
             resourceError = error.localizedDescription
