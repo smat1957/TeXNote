@@ -119,7 +119,7 @@ enum TeXDocumentTransferService {
         let targets = [sourceURL, pdfURL] + resources.map { resource in
             destinationFolder
                 .appending(path: resource.folderName, directoryHint: .isDirectory)
-                .appending(path: resource.fileName)
+                .appending(path: resource.relativePath)
         }
         let conflicts = targets.filter {
             FileManager.default.fileExists(atPath: $0.path)
@@ -150,13 +150,14 @@ enum TeXDocumentTransferService {
                 directoryHint: .isDirectory
             )
             return AtomicFileWrite(
-                url: folder.appending(path: resource.fileName),
+                url: folder.appending(path: resource.relativePath),
                 data: resource.data
             )
         }
         try AtomicFileSetWriter.write(
             writes,
             creatingDirectories: [destinationFolder] + resourceFolders
+                + writes.map { $0.url.deletingLastPathComponent() }
         )
     }
 
@@ -419,10 +420,10 @@ enum TeXDocumentTransferService {
         from noteFolder: URL
     ) throws -> [ExportResource] {
         var results: [ExportResource] = []
-        var namesByFolder: [String: Set<String>] = [:]
-        for (folderName, paths) in [
-            ("pics", card.pictureRelativePaths),
-            ("files", card.fileRelativePaths)
+        var pathsByFolder: [String: Set<String>] = [:]
+        for (kind, paths) in [
+            (CardResourceDirectory.pictures, card.pictureRelativePaths),
+            (CardResourceDirectory.files, card.fileRelativePaths)
         ] {
             for path in paths.sorted() {
                 let url = try NoteFolderStore.safeURL(for: path, in: noteFolder)
@@ -434,16 +435,22 @@ enum TeXDocumentTransferService {
                       let data = try? Data(contentsOf: url) else {
                     throw TeXDocumentTransferError.missingResource(path)
                 }
-                let fileName = url.lastPathComponent
-                guard namesByFolder[folderName, default: []].insert(fileName).inserted else {
+                guard let relativePath = kind.storedRelativePath(
+                    for: path,
+                    card: card
+                ) else {
+                    throw TeXDocumentTransferError.missingResource(path)
+                }
+                guard pathsByFolder[kind.folderName, default: []]
+                    .insert(relativePath).inserted else {
                     throw TeXDocumentTransferError.duplicateResourceName(
-                        "\(folderName)/\(fileName)"
+                        "\(kind.folderName)/\(relativePath)"
                     )
                 }
                 results.append(
                     ExportResource(
-                        folderName: folderName,
-                        fileName: fileName,
+                        folderName: kind.folderName,
+                        relativePath: relativePath,
                         data: data
                     )
                 )
@@ -461,6 +468,6 @@ private struct ParsedSource {
 
 private struct ExportResource {
     let folderName: String
-    let fileName: String
+    let relativePath: String
     let data: Data
 }

@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct CardEditorView: View {
     @Environment(\.dismiss) private var dismiss
@@ -463,47 +462,45 @@ struct CardEditorView: View {
 
     private var resources: some View {
         Form {
-            HStack {
-                ResourceImportButton(
-                    title: "画像を追加…",
-                    systemImage: "photo.badge.plus",
-                    allowedContentTypes: [.image, .pdf]
-                ) {
-                    prepareResourceImport()
-                } completed: { result in
-                    importSelectedResources(result, kind: .pictures)
-                }
-
-                ResourceImportButton(
-                    title: "ファイルを追加…",
-                    systemImage: "doc.badge.plus",
-                    allowedContentTypes: [.data, .item]
-                ) {
-                    prepareResourceImport()
-                } completed: { result in
-                    importSelectedResources(result, kind: .files)
-                }
+            PlatformResourceImportControls {
+                prepareResourceImport()
+            } completed: { result, kind in
+                importSelectedResources(result, kind: kind)
             }
 
-            Section("画像") {
-                if pictures.isEmpty {
-                    Text("画像はありません")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(pictures, id: \.relativePath) { picture in
-                        resourceRow(picture, kind: .pictures)
+            Section {
+                PlatformResourceTree(
+                    root: CardResourceTree.root(
+                        for: pictures,
+                        kind: .pictures,
+                        card: draft
+                    ),
+                    delete: { deleteResource($0, kind: .pictures) },
+                    renameDirectory: {
+                        renameResourceDirectory(
+                            at: $0,
+                            to: $1,
+                            kind: .pictures
+                        )
                     }
-                }
+                )
             }
-            Section("ファイル") {
-                if files.isEmpty {
-                    Text("ファイルはありません")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(files, id: \.relativePath) { file in
-                        resourceRow(file, kind: .files)
+            Section {
+                PlatformResourceTree(
+                    root: CardResourceTree.root(
+                        for: files,
+                        kind: .files,
+                        card: draft
+                    ),
+                    delete: { deleteResource($0, kind: .files) },
+                    renameDirectory: {
+                        renameResourceDirectory(
+                            at: $0,
+                            to: $1,
+                            kind: .files
+                        )
                     }
-                }
+                )
             }
         }
         .formStyle(.grouped)
@@ -745,33 +742,6 @@ struct CardEditorView: View {
         return true
     }
 
-    private func resourceRow(
-        _ resource: CardAsset,
-        kind: CardResourceDirectory
-    ) -> some View {
-        let relativeName = "\(kind.folderName)/\(resource.fileName)"
-        return HStack(spacing: 12) {
-            Text(relativeName)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
-
-            Spacer(minLength: 12)
-
-            Button(role: .destructive) {
-                pendingResourceDeletion = PendingResourceDeletion(
-                    resource: resource,
-                    kind: kind
-                )
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.red)
-            .help("削除")
-            .accessibilityLabel("\(relativeName)を削除")
-        }
-    }
-
     private func deleteResource(
         _ resource: CardAsset,
         kind: CardResourceDirectory
@@ -799,29 +769,35 @@ struct CardEditorView: View {
             resourceError = error.localizedDescription
         }
     }
-}
 
-private struct ResourceImportButton: View {
-    let title: String
-    let systemImage: String
-    let allowedContentTypes: [UTType]
-    let prepare: () -> Bool
-    let completed: (Result<[URL], Error>) -> Void
-
-    @State private var isPresented = false
-
-    var body: some View {
-        Button(title, systemImage: systemImage) {
-            guard prepare() else { return }
-            isPresented = true
+    private func renameResourceDirectory(
+        at relativePath: String,
+        to name: String,
+        kind: CardResourceDirectory
+    ) {
+        do {
+            let renamed = try NoteFolderStore.renameResourceDirectory(
+                at: relativePath,
+                to: name,
+                for: draft,
+                kind: kind,
+                in: noteFolder
+            )
+            switch kind {
+            case .pictures:
+                pictures = renamed
+                draft.pictureRelativePaths = renamed.map(\.relativePath)
+            case .files:
+                files = renamed
+                draft.fileRelativePaths = renamed.map(\.relativePath)
+            }
+            Task {
+                await commitDraft()
+                creationCommitted()
+            }
+        } catch {
+            resourceError = error.localizedDescription
         }
-        .buttonStyle(.borderless)
-        .fileImporter(
-            isPresented: $isPresented,
-            allowedContentTypes: allowedContentTypes,
-            allowsMultipleSelection: true,
-            onCompletion: completed
-        )
     }
 }
 

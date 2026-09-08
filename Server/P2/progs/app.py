@@ -222,9 +222,10 @@ def compile_document(
         if produces_dvi:
             for relative_path, _ in pictures:
                 if Path(relative_path).suffix.lower() in {".jpg", ".jpeg", ".png", ".pdf"}:
+                    picture_path = legacy_asset_path(relative_path, "pics")
                     log_parts.append(
                         run_process(
-                            ["/usr/bin/extractbb", "-x", relative_path],
+                            ["/usr/bin/extractbb", "-x", str(picture_path)],
                             work_directory,
                             environment,
                         )
@@ -281,7 +282,10 @@ def write_inputs(
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             destination.write_bytes(content)
 
-            legacy_destination = work_directory / legacy_folder / Path(relative_path).name
+            legacy_destination = work_directory / legacy_asset_path(
+                relative_path,
+                legacy_folder,
+            )
             if legacy_destination != destination:
                 legacy_destination.parent.mkdir(
                     mode=0o700,
@@ -289,6 +293,17 @@ def write_inputs(
                     exist_ok=True,
                 )
                 legacy_destination.write_bytes(content)
+
+
+def legacy_asset_path(relative_path: str, legacy_folder: str) -> Path:
+    path_parts = Path(relative_path).parts
+    if (
+        len(path_parts) >= 4
+        and path_parts[0] == "Cards"
+        and path_parts[2] == legacy_folder
+    ):
+        return Path(legacy_folder, *path_parts[3:])
+    return Path(legacy_folder, Path(relative_path).name)
 
 
 def restricted_environment(work_directory: Path) -> dict[str, str]:

@@ -22,7 +22,10 @@ actor LocalTeXCompiler: TeXCompiling {
             try? manager.removeItem(at: workDirectory)
         }
 
-        for (legacyFolder, assets) in [("pics", pictures), ("files", files)] {
+        for (kind, assets) in [
+            (CardResourceDirectory.pictures, pictures),
+            (CardResourceDirectory.files, files)
+        ] {
             for asset in assets {
                 let resourceURL = try NoteFolderStore.safeURL(
                     for: asset.relativePath,
@@ -34,7 +37,10 @@ actor LocalTeXCompiler: TeXCompiling {
                 )
                 try asset.data.write(to: resourceURL, options: .atomic)
 
-                let legacyPath = "\(legacyFolder)/\(asset.fileName)"
+                let legacyPath = kind.legacyRelativePath(
+                    for: asset.relativePath,
+                    card: card
+                )
                 guard legacyPath != asset.relativePath else { continue }
                 let legacyURL = try NoteFolderStore.safeURL(
                     for: legacyPath,
@@ -60,6 +66,7 @@ actor LocalTeXCompiler: TeXCompiling {
         if card.engine.producesDVI {
             combinedLog += try await generateBoundingBoxes(
                 for: pictures,
+                card: card,
                 in: workDirectory
             )
         }
@@ -112,6 +119,7 @@ actor LocalTeXCompiler: TeXCompiling {
 
     private func generateBoundingBoxes(
         for pictures: [CardAsset],
+        card: TeXCard,
         in workDirectory: URL
     ) async throws -> String {
         let supportedExtensions = Set(["jpg", "jpeg", "png", "pdf"])
@@ -129,9 +137,13 @@ actor LocalTeXCompiler: TeXCompiling {
 
         var log = ""
         for picture in targets {
+            let picturePath = CardResourceDirectory.pictures.legacyRelativePath(
+                for: picture.relativePath,
+                card: card
+            )
             let result = try await run(
                 executable: extractor,
-                arguments: ["-x", picture.relativePath],
+                arguments: ["-x", picturePath],
                 directory: workDirectory
             )
             log += result.output

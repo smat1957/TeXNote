@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 enum NotePackageNaming {
     static let pathExtension = "texnote"
@@ -25,6 +26,8 @@ enum NoteFolderError: LocalizedError {
     case unsupportedFormat(Int)
     case noteMustBeSavedBeforeAddingResources
     case duplicateResourceName(String)
+    case invalidResourceFolderName(String)
+    case resourceFolderAlreadyExists(String)
     case missingResource(String)
     case missingPDF(String)
     case invalidStoredPath(String)
@@ -42,6 +45,10 @@ enum NoteFolderError: LocalizedError {
             "画像またはファイルを追加する前に、ノートを保存してください。"
         case .duplicateResourceName(let name):
             "同名の画像またはファイルが複数選択されています:\n\(name)"
+        case .invalidResourceFolderName(let name):
+            "フォルダ名として使用できません:\n\(name)"
+        case .resourceFolderAlreadyExists(let name):
+            "同名のフォルダが既にあります:\n\(name)"
         case .missingResource(let path):
             "保存に必要な画像またはファイルが見つかりません:\n\(path)"
         case .missingPDF(let path):
@@ -72,6 +79,26 @@ enum CardResourceDirectory: Equatable {
         case .pictures: "pics"
         case .files: "files"
         }
+    }
+
+    func storedRelativePath(
+        for resourcePath: String,
+        card: TeXCard
+    ) -> String? {
+        let prefix = relativePath(for: card) + "/"
+        guard resourcePath.hasPrefix(prefix) else { return nil }
+        return String(resourcePath.dropFirst(prefix.count))
+    }
+
+    func legacyRelativePath(
+        for resourcePath: String,
+        card: TeXCard
+    ) -> String {
+        let storedPath = storedRelativePath(
+            for: resourcePath,
+            card: card
+        ) ?? URL(filePath: resourcePath).lastPathComponent
+        return "\(folderName)/\(storedPath)"
     }
 }
 
@@ -140,11 +167,12 @@ enum NoteFolderStore {
                 var savedPaths: [String] = []
                 for resourceFile in resourceFiles {
                     let destinationPath =
-                        "\(folderPath)/\(resourceFile.fileName)"
+                        "\(folderPath)/\(resourceFile.relativePath)"
                     let destinationURL = try packageDestinationURL(
                         for: destinationPath,
                         in: noteFolder
                     )
+                    directories.append(destinationURL.deletingLastPathComponent())
                     writes.append(
                         AtomicFileWrite(
                             url: destinationURL,
@@ -217,8 +245,10 @@ enum NoteFolderStore {
         let filesToRemove = existingItems.files.filter {
             !desiredFilePaths.contains($0.standardizedFileURL.path)
         }
-        let directoriesToRemove = existingItems.directories.filter {
-            !desiredDirectoryPaths.contains($0.standardizedFileURL.path)
+        let directoriesToRemove = existingItems.directories.filter { directory in
+            let path = directory.standardizedFileURL.path
+            return !desiredDirectoryPaths.contains(path)
+                && !desiredFilePaths.contains(where: { $0.hasPrefix(path + "/") })
         }
         try AtomicFileSetWriter.write(
             writes,
@@ -319,32 +349,41 @@ enum NoteFolderStore {
         var knownRelativePaths = Set(mergedRelativePaths)
         var selectedRelativePaths: Set<String> = []
         var writes: [AtomicFileWrite] = []
+        var destinationDirectories = [destinationFolder]
         for sourceURL in sourceURLs {
-            let relativePath = destinationFolderPath
-                + "/\(sourceURL.lastPathComponent)"
-            guard selectedRelativePaths.insert(relativePath).inserted else {
-                throw NoteFolderError.duplicateResourceName(
-                    sourceURL.lastPathComponent
+            for selectedFile in try selectedFiles(
+                at: sourceURL,
+                kind: kind
+            ) {
+                let relativePath = destinationFolderPath
+                    + "/\(selectedFile.relativePath)"
+                guard selectedRelativePaths.insert(relativePath).inserted else {
+                    throw NoteFolderError.duplicateResourceName(
+                        selectedFile.relativePath
+                    )
+                }
+                let destinationURL = try packageDestinationURL(
+                    for: relativePath,
+                    in: noteFolder
                 )
-            }
-            let destinationURL = try packageDestinationURL(
-                for: relativePath,
-                in: noteFolder
-            )
-            writes.append(
-                AtomicFileWrite(
-                    url: destinationURL,
-                    data: try securityScopedData(from: sourceURL)
+                destinationDirectories.append(
+                    destinationURL.deletingLastPathComponent()
                 )
-            )
-            if knownRelativePaths.insert(relativePath).inserted {
-                mergedRelativePaths.append(relativePath)
+                writes.append(
+                    AtomicFileWrite(
+                        url: destinationURL,
+                        data: selectedFile.data
+                    )
+                )
+                if knownRelativePaths.insert(relativePath).inserted {
+                    mergedRelativePaths.append(relativePath)
+                }
             }
         }
 
         try AtomicFileSetWriter.write(
             writes,
-            creatingDirectories: [destinationFolder]
+            creatingDirectories: destinationDirectories
         )
 
         return loadResources(at: mergedRelativePaths, from: noteFolder)
@@ -378,6 +417,78 @@ enum NoteFolderStore {
             try FileManager.default.removeItem(at: resourceURL)
         }
         return loadResources(for: card, kind: kind, from: noteFolder)
+    }
+
+    @discardableResult
+    static func renameResourceDirectory(
+        at storedRelativePath: String,
+        to proposedName: String,
+        for card: TeXCard,
+        kind: CardResourceDirectory,
+        in noteFolder: URL?
+    ) throws -> [CardAsset] {
+        guard let noteFolder else {
+            throw NoteFolderError.noteMustBeSavedBeforeAddingResources
+        }
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              name != ".",
+              name != "..",
+              !name.contains("/"),
+              !name.contains("\\"),
+              !name.contains(":"),
+              !name.contains("\0") else {
+            throw NoteFolderError.invalidResourceFolderName(proposedName)
+        }
+        try validateRelativeResourcePath(storedRelativePath)
+
+        let oldPath = kind.relativePath(for: card) + "/" + storedRelativePath
+        let storedComponents = storedRelativePath.split(separator: "/")
+        let parentStoredPath = storedComponents.dropLast().joined(separator: "/")
+        let newStoredPath = parentStoredPath.isEmpty
+            ? name
+            : parentStoredPath + "/" + name
+        try validateRelativeResourcePath(newStoredPath)
+        if newStoredPath == storedRelativePath {
+            return loadResources(for: card, kind: kind, from: noteFolder)
+        }
+
+        let newPath = kind.relativePath(for: card) + "/" + newStoredPath
+        let granted = noteFolder.startAccessingSecurityScopedResource()
+        defer {
+            if granted {
+                noteFolder.stopAccessingSecurityScopedResource()
+            }
+        }
+        let oldURL = try safeURL(
+            for: oldPath,
+            in: noteFolder,
+            directoryHint: .isDirectory
+        )
+        let values = try oldURL.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw NoteFolderError.missingResource(oldPath)
+        }
+        let newURL = try packageDestinationURL(
+            for: newPath,
+            in: noteFolder,
+            directoryHint: .isDirectory
+        )
+        guard !FileManager.default.fileExists(atPath: newURL.path) else {
+            throw NoteFolderError.resourceFolderAlreadyExists(newStoredPath)
+        }
+
+        try FileManager.default.moveItem(at: oldURL, to: newURL)
+        let oldPrefix = oldPath + "/"
+        let newPrefix = newPath + "/"
+        let renamedPaths = resourcePaths(for: card, kind: kind).map { path in
+            path.hasPrefix(oldPrefix)
+                ? newPrefix + path.dropFirst(oldPrefix.count)
+                : path
+        }
+        return loadResources(at: renamedPaths, from: noteFolder)
     }
 
     static func discardResources(for card: TeXCard, from noteFolder: URL?) {
@@ -486,12 +597,15 @@ enum NoteFolderStore {
         from noteFolder: URL
     ) throws -> [ResourceFile] {
         let paths = resourcePaths(for: card, kind: kind)
-        let sourceFolderPath = kind.relativePath(for: card)
-        var seenFileNames: Set<String> = []
+        var seenRelativePaths: Set<String> = []
         return try paths.sorted().map { relativePath in
-            guard relativePath.hasPrefix(sourceFolderPath + "/") else {
+            guard let storedRelativePath = kind.storedRelativePath(
+                for: relativePath,
+                card: card
+            ) else {
                 throw NoteFolderError.missingResource(relativePath)
             }
+            try validateRelativeResourcePath(storedRelativePath)
             let url = try safeURL(for: relativePath, in: noteFolder)
             guard let values = try? url.resourceValues(
                 forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
@@ -499,18 +613,19 @@ enum NoteFolderStore {
                values.isSymbolicLink != true else {
                 throw NoteFolderError.missingResource(relativePath)
             }
-            let resourceFile = ResourceFile(url: url)
-            guard seenFileNames.insert(resourceFile.fileName).inserted else {
+            guard seenRelativePaths.insert(storedRelativePath).inserted else {
                 throw NoteFolderError.invalidStoredPath(relativePath)
             }
-            return resourceFile
+            return ResourceFile(
+                url: url,
+                relativePath: storedRelativePath
+            )
         }
     }
 
     private struct ResourceFile {
         let url: URL
-
-        var fileName: String { url.lastPathComponent }
+        let relativePath: String
     }
 
     private static func validateCanonicalPaths(for card: TeXCard) throws {
@@ -618,14 +733,96 @@ enum NoteFolderStore {
         return ManagedItems(files: files, directories: directories)
     }
 
-    private static func securityScopedData(from url: URL) throws -> Data {
-        let granted = url.startAccessingSecurityScopedResource()
+    private struct SelectedFile {
+        let relativePath: String
+        let data: Data
+    }
+
+    private static func selectedFiles(
+        at sourceURL: URL,
+        kind: CardResourceDirectory
+    ) throws -> [SelectedFile] {
+        let granted = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if granted {
-                url.stopAccessingSecurityScopedResource()
+                sourceURL.stopAccessingSecurityScopedResource()
             }
         }
-        return try Data(contentsOf: url)
+
+        let values = try sourceURL.resourceValues(
+            forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+        )
+        guard values.isSymbolicLink != true else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+        guard values.isDirectory == true else {
+            return [SelectedFile(
+                relativePath: sourceURL.lastPathComponent,
+                data: try Data(contentsOf: sourceURL)
+            )]
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: sourceURL,
+            includingPropertiesForKeys: [
+                .isDirectoryKey,
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .contentTypeKey
+            ],
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+
+        var files: [SelectedFile] = []
+        for case let fileURL as URL in enumerator {
+            let fileValues = try fileURL.resourceValues(
+                forKeys: [
+                    .isDirectoryKey,
+                    .isRegularFileKey,
+                    .isSymbolicLinkKey,
+                    .contentTypeKey
+                ]
+            )
+            if fileValues.isSymbolicLink == true {
+                if fileValues.isDirectory == true {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            guard fileValues.isRegularFile == true else { continue }
+            if kind == .pictures {
+                guard let contentType = fileValues.contentType,
+                      contentType.conforms(to: .image)
+                        || contentType.conforms(to: .pdf) else {
+                    continue
+                }
+            }
+
+            let childComponents = fileURL.pathComponents.dropFirst(
+                sourceURL.pathComponents.count
+            )
+            let relativePath = (
+                [sourceURL.lastPathComponent] + Array(childComponents)
+            ).joined(separator: "/")
+            try validateRelativeResourcePath(relativePath)
+            files.append(
+                SelectedFile(
+                    relativePath: relativePath,
+                    data: try Data(contentsOf: fileURL)
+                )
+            )
+        }
+        return files.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    private static func validateRelativeResourcePath(_ path: String) throws {
+        _ = try containedPackageURL(
+            for: path,
+            in: URL(filePath: "/"),
+            directoryHint: .notDirectory
+        )
     }
 }
 

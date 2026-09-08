@@ -24,6 +24,7 @@
 			membershipExceptions = (
 				Info.plist,
 				Platform/iOS/iOSPDFInteractions.swift,
+				Platform/iOS/iOSResourceTree.swift,
 				Platform/iOS/iOSTeXNoteRootView.swift,
 				Platform/iOS/iOSTeXSourceEditor.swift,
 				Platform/iPad/Info.plist,
